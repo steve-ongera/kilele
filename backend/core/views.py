@@ -1,3 +1,1420 @@
-from django.shortcuts import render
+from django.utils import timezone
+from django.db import transaction
+from django.db.models import Sum, Q, Count, DecimalField
+from django.db.models.functions import Coalesce
+from rest_framework import generics, status, views
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.response import Response
+from rest_framework_simplejwt.tokens import RefreshToken
+from decimal import Decimal
+import csv, io, datetime
 
-# Create your views here.
+from .models import (
+    User, OTPToken, Branch, SystemRule,
+    Member, Contribution, Payment, PaymentAllocation,
+    LoanProduct, Loan, LoanRepayment, Penalty,
+    AnnualDistribution, DistributionEntry,
+    Investor, AssetClass, InvestmentTransaction, DividendDeclaration,
+    InvestorDividend, InvestorWithdrawal,
+    Property, Unit, Tenant, Lease, RentCollection, MaintenanceRequest,
+    MPESATransaction, ApprovalRequest, AuditLog,
+    Notification, NotificationTemplate,
+    BranchType, LoanStatus, ApprovalStatus, MPESAConfidence, UserRole,
+)
+from .serializers import (
+    RequestOTPSerializer, VerifyOTPSerializer,
+    UserSerializer, UserCreateSerializer, UserProfileSerializer,
+    BranchSerializer, SystemRuleSerializer,
+    MemberListSerializer, MemberDetailSerializer, MemberCreateSerializer,
+    ContributionSerializer, ContributionCreateSerializer,
+    PaymentSerializer,
+    LoanProductSerializer, LoanListSerializer, LoanDetailSerializer,
+    LoanCreateSerializer, LoanApproveSerializer, LoanDisburseSerializer,
+    LoanRepaymentSerializer,
+    PenaltySerializer, PenaltyWaiveSerializer,
+    AnnualDistributionSerializer,
+    InvestorListSerializer, InvestorDetailSerializer, InvestorCreateSerializer,
+    AssetClassSerializer, InvestmentTransactionSerializer,
+    DividendDeclarationSerializer, InvestorWithdrawalSerializer,
+    TableBankingMemberSerializer, TableBankingLendingFundSerializer,
+    PropertySerializer, UnitSerializer,
+    TenantListSerializer, TenantDetailSerializer, TenantCreateSerializer,
+    LeaseSerializer, RentCollectionSerializer, MaintenanceRequestSerializer,
+    MPESATransactionSerializer, MPESACallbackSerializer, MPESAUploadSerializer,
+    MPESAManualAllocateSerializer,
+    ApprovalRequestSerializer, ApprovalActionSerializer, ApprovalRejectSerializer,
+    AuditLogSerializer,
+    NotificationSerializer, NotificationTemplateSerializer,
+    DashboardSerializer,
+)
+from .permissions import (
+    IsSuperAdmin, IsBranchAdminOrAbove, IsFinanceOfficerOrAbove,
+    IsAuditorOrAbove, IsMember, IsInvestor, IsTenant,
+)
+from .utils import send_otp_email, log_audit
+
+
+# ─────────────────────────────────────────────
+# HELPERS
+# ─────────────────────────────────────────────
+
+def get_client_ip(request):
+    x_forwarded = request.META.get('HTTP_X_FORWARDED_FOR')
+    return x_forwarded.split(',')[0] if x_forwarded else request.META.get('REMOTE_ADDR')
+
+
+def get_device(request):
+    return request.META.get('HTTP_USER_AGENT', '')[:300]
+
+
+# ─────────────────────────────────────────────
+# AUTH
+# ─────────────────────────────────────────────
+
+class RequestOTPView(views.APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = RequestOTPSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data['email']
+
+        try:
+            user = User.objects.get(email=email, is_active=True)
+        except User.DoesNotExist:
+            # Don't reveal whether the email exists
+            return Response({'detail': 'If that email is registered, an OTP has been sent.'})
+
+        import random, string
+        token = ''.join(random.choices(string.digits, k=6))
+        expires_at = timezone.now() + datetime.timedelta(minutes=10)
+        OTPToken.objects.filter(user=user, is_used=False).update(is_used=True)
+        OTPToken.objects.create(user=user, token=token, expires_at=expires_at)
+        send_otp_email(user, token)
+        return Response({'detail': 'If that email is registered, an OTP has been sent.'})
+
+
+class VerifyOTPView(views.APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = VerifyOTPSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data['email']
+        token = serializer.validated_data['token']
+
+        try:
+            user = User.objects.get(email=email, is_active=True)
+        except User.DoesNotExist:
+            return Response({'detail': 'Invalid credentials.'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        otp = OTPToken.objects.filter(user=user, token=token, is_used=False).first()
+        if not otp or not otp.is_valid():
+            return Response({'detail': 'Invalid or expired OTP.'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        otp.is_used = True
+        otp.save()
+
+        user.last_login = timezone.now()
+        user.save(update_fields=['last_login'])
+
+        refresh = RefreshToken.for_user(user)
+        log_audit(
+            user=user, action='LOGIN', ip_address=get_client_ip(request),
+            device=get_device(request)
+        )
+        return Response({
+            'access': str(refresh.access_token),
+            'refresh': str(refresh),
+            'user': UserSerializer(user).data,
+        })
+
+
+class TokenRefreshView(views.APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        refresh_token = request.data.get('refresh')
+        if not refresh_token:
+            return Response({'detail': 'Refresh token required.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            refresh = RefreshToken(refresh_token)
+            return Response({'access': str(refresh.access_token)})
+        except Exception:
+            return Response({'detail': 'Invalid or expired refresh token.'}, status=status.HTTP_401_UNAUTHORIZED)
+
+
+class LogoutView(views.APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        try:
+            refresh_token = request.data.get('refresh')
+            if refresh_token:
+                token = RefreshToken(refresh_token)
+                token.blacklist()
+        except Exception:
+            pass
+        log_audit(user=request.user, action='LOGOUT', ip_address=get_client_ip(request))
+        return Response({'detail': 'Logged out successfully.'})
+
+
+# ─────────────────────────────────────────────
+# DASHBOARD
+# ─────────────────────────────────────────────
+
+class DashboardView(views.APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        role = user.role
+        branch = user.branch
+        now = timezone.now()
+        data = {'role': role, 'branch': branch.name if branch else None}
+
+        if role == UserRole.SUPER_ADMIN:
+            data.update(self._super_admin_kpis())
+        elif role in [UserRole.BRANCH_ADMIN, UserRole.FINANCE_OFFICER]:
+            data.update(self._branch_kpis(branch))
+        elif role == UserRole.MEMBER:
+            data.update(self._member_kpis(user))
+        elif role == UserRole.INVESTOR:
+            data.update(self._investor_kpis(user))
+        elif role == UserRole.TENANT:
+            data.update(self._tenant_kpis(user))
+        elif role == UserRole.AUDITOR:
+            data.update(self._super_admin_kpis())
+
+        return Response(data)
+
+    def _super_admin_kpis(self):
+        now = timezone.now()
+        return {
+            'tujijenge_members': Member.objects.filter(
+                branch__branch_type=BranchType.TUJIJENGE, status='ACTIVE'
+            ).count(),
+            'tujijenge_contributions_mtd': Contribution.objects.filter(
+                period_year=now.year, period_month=now.month, status='POSTED'
+            ).aggregate(t=Sum('paid'))['t'] or 0,
+            'tujijenge_loans_outstanding': Loan.objects.filter(
+                status__in=['PERFORMING', 'DISBURSED', 'WATCHLIST', 'OVERDUE']
+            ).aggregate(t=Sum('balance'))['t'] or 0,
+            'tujijenge_arrears': Contribution.objects.aggregate(t=Sum('arrears'))['t'] or 0,
+            'wa_investors': Investor.objects.filter(status='ACTIVE').count(),
+            'tb_members': Member.objects.filter(
+                branch__branch_type=BranchType.TABLE_BANKING, status='ACTIVE'
+            ).count(),
+            'rentals_properties': Property.objects.filter(status='ACTIVE').count(),
+            'mpesa_review_queue': MPESATransaction.objects.filter(
+                confidence=MPESAConfidence.REVIEW, is_allocated=False
+            ).count(),
+            'mpesa_exception_queue': MPESATransaction.objects.filter(
+                confidence=MPESAConfidence.EXCEPTION, is_allocated=False
+            ).count(),
+            'pending_approvals': ApprovalRequest.objects.filter(status='PENDING').count(),
+        }
+
+    def _branch_kpis(self, branch):
+        if not branch:
+            return {}
+        now = timezone.now()
+        return {
+            'tujijenge_members': Member.objects.filter(branch=branch, status='ACTIVE').count(),
+            'tujijenge_contributions_mtd': Contribution.objects.filter(
+                member__branch=branch, period_year=now.year,
+                period_month=now.month, status='POSTED'
+            ).aggregate(t=Sum('paid'))['t'] or 0,
+            'tujijenge_loans_outstanding': Loan.objects.filter(
+                branch=branch, status__in=['PERFORMING', 'DISBURSED', 'WATCHLIST', 'OVERDUE']
+            ).aggregate(t=Sum('balance'))['t'] or 0,
+            'pending_approvals': ApprovalRequest.objects.filter(
+                branch=branch, status='PENDING'
+            ).count(),
+            'mpesa_review_queue': MPESATransaction.objects.filter(
+                branch=branch, confidence=MPESAConfidence.REVIEW, is_allocated=False
+            ).count(),
+        }
+
+    def _member_kpis(self, user):
+        try:
+            member = user.member
+        except Exception:
+            return {}
+        active_loan = member.loans.filter(
+            status__in=['PERFORMING', 'DISBURSED']
+        ).first()
+        next_contribution = Contribution.objects.filter(
+            member=member, status='PENDING'
+        ).order_by('due_date').first()
+        return {
+            'my_balance': member.total_contributions,
+            'my_loan_balance': active_loan.balance if active_loan else 0,
+            'my_next_due': next_contribution.due_date if next_contribution else None,
+        }
+
+    def _investor_kpis(self, user):
+        try:
+            investor = user.investor
+        except Exception:
+            return {}
+        return {
+            'my_balance': investor.current_capital,
+            'wa_pending_withdrawals': investor.withdrawals.filter(
+                status__in=['PENDING', 'UNDER_REVIEW']
+            ).count(),
+        }
+
+    def _tenant_kpis(self, user):
+        try:
+            tenant = user.tenant
+        except Exception:
+            return {}
+        now = timezone.now()
+        current_rent = RentCollection.objects.filter(
+            tenant=tenant, period_year=now.year, period_month=now.month
+        ).first()
+        return {
+            'my_balance': current_rent.paid if current_rent else 0,
+            'my_next_due': current_rent.due_date if current_rent and hasattr(current_rent, 'due_date') else None,
+        }
+
+
+# ─────────────────────────────────────────────
+# USERS (Super Admin)
+# ─────────────────────────────────────────────
+
+class UserListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated, IsSuperAdmin]
+    queryset = User.objects.all().order_by('-date_joined')
+
+    def get_serializer_class(self):
+        return UserCreateSerializer if self.request.method == 'POST' else UserSerializer
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        role = self.request.query_params.get('role')
+        branch = self.request.query_params.get('branch')
+        if role:
+            qs = qs.filter(role=role)
+        if branch:
+            qs = qs.filter(branch__id=branch)
+        return qs
+
+
+class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [IsAuthenticated, IsSuperAdmin]
+    queryset = User.objects.all()
+    serializer_class = UserSerializer
+
+
+class ProfileView(generics.RetrieveUpdateAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = UserProfileSerializer
+
+    def get_object(self):
+        return self.request.user
+
+
+# ─────────────────────────────────────────────
+# BRANCHES
+# ─────────────────────────────────────────────
+
+class BranchListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated, IsBranchAdminOrAbove]
+    serializer_class = BranchSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.role == UserRole.SUPER_ADMIN:
+            return Branch.objects.all().order_by('name')
+        return Branch.objects.filter(id=user.branch_id)
+
+    def perform_create(self, serializer):
+        branch = serializer.save(created_by=self.request.user)
+        log_audit(user=self.request.user, action='CREATE_BRANCH',
+                  model_name='Branch', object_id=str(branch.id),
+                  new_value={'name': branch.name})
+
+
+class BranchDetailView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [IsAuthenticated, IsBranchAdminOrAbove]
+    serializer_class = BranchSerializer
+    queryset = Branch.objects.all()
+
+    def perform_update(self, serializer):
+        old = BranchSerializer(self.get_object()).data
+        branch = serializer.save()
+        log_audit(user=self.request.user, action='UPDATE_BRANCH',
+                  model_name='Branch', object_id=str(branch.id),
+                  old_value=old, new_value=BranchSerializer(branch).data)
+
+
+# ─────────────────────────────────────────────
+# SYSTEM RULES
+# ─────────────────────────────────────────────
+
+class SystemRuleListView(generics.ListAPIView):
+    permission_classes = [IsAuthenticated, IsBranchAdminOrAbove]
+    serializer_class = SystemRuleSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = SystemRule.objects.all().order_by('branch', 'key', '-version')
+        if user.role != UserRole.SUPER_ADMIN and user.branch:
+            qs = qs.filter(branch=user.branch)
+        return qs
+
+
+class SystemRuleUpdateView(generics.UpdateAPIView):
+    permission_classes = [IsAuthenticated, IsSuperAdmin]
+    serializer_class = SystemRuleSerializer
+    queryset = SystemRule.objects.all()
+    lookup_field = 'key'
+
+    def perform_update(self, serializer):
+        old = SystemRuleSerializer(self.get_object()).data
+        rule = serializer.save()
+        log_audit(user=self.request.user, action='UPDATE_RULE',
+                  model_name='SystemRule', object_id=str(rule.id),
+                  old_value=old, new_value=SystemRuleSerializer(rule).data)
+
+
+# ─────────────────────────────────────────────
+# MEMBERS
+# ─────────────────────────────────────────────
+
+class MemberListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated, IsFinanceOfficerOrAbove]
+
+    def get_serializer_class(self):
+        return MemberCreateSerializer if self.request.method == 'POST' else MemberListSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = Member.objects.select_related('branch', 'user').order_by('-date_joined')
+        if user.role != UserRole.SUPER_ADMIN and user.branch:
+            qs = qs.filter(branch=user.branch)
+        # Filters
+        status_f = self.request.query_params.get('status')
+        branch_f = self.request.query_params.get('branch')
+        search = self.request.query_params.get('search')
+        if status_f:
+            qs = qs.filter(status=status_f)
+        if branch_f:
+            qs = qs.filter(branch__id=branch_f)
+        if search:
+            qs = qs.filter(
+                Q(full_name__icontains=search) |
+                Q(member_number__icontains=search) |
+                Q(phone__icontains=search)
+            )
+        return qs
+
+    def perform_create(self, serializer):
+        member = serializer.save(created_by=self.request.user)
+        log_audit(user=self.request.user, action='CREATE_MEMBER',
+                  model_name='Member', object_id=str(member.id),
+                  new_value={'member_number': member.member_number, 'name': member.full_name})
+
+
+class MemberDetailView(generics.RetrieveUpdateAPIView):
+    permission_classes = [IsAuthenticated, IsFinanceOfficerOrAbove]
+    queryset = Member.objects.select_related('branch', 'user')
+
+    def get_serializer_class(self):
+        return MemberCreateSerializer if self.request.method in ['PUT', 'PATCH'] else MemberDetailSerializer
+
+
+class MemberStatementView(views.APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        try:
+            member = Member.objects.get(pk=pk)
+        except Member.DoesNotExist:
+            return Response({'detail': 'Member not found.'}, status=404)
+
+        # Permission: member can only see own statement
+        if request.user.role == UserRole.MEMBER:
+            if not hasattr(request.user, 'member') or request.user.member.id != member.id:
+                return Response({'detail': 'Forbidden.'}, status=403)
+
+        contributions = ContributionSerializer(
+            member.contributions.order_by('-period_year', '-period_month'), many=True
+        ).data
+        loans = LoanListSerializer(
+            member.loans.order_by('-created_at'), many=True
+        ).data
+        payments = PaymentSerializer(
+            member.payments.order_by('-payment_date'), many=True
+        ).data
+        penalties = PenaltySerializer(
+            member.penalties.order_by('-created_at'), many=True
+        ).data
+
+        summary = {
+            'total_contributions': str(member.total_contributions),
+            'loan_limit': str(member.loan_limit),
+            'advance_credit': str(member.advance_credit),
+            'active_loans': member.loans.filter(
+                status__in=['PERFORMING', 'DISBURSED']
+            ).count(),
+            'total_arrears': str(
+                member.contributions.aggregate(t=Sum('arrears'))['t'] or 0
+            ),
+        }
+
+        return Response({
+            'member': MemberDetailSerializer(member).data,
+            'contributions': contributions,
+            'loans': loans,
+            'payments': payments,
+            'penalties': penalties,
+            'summary': summary,
+        })
+
+
+# ─────────────────────────────────────────────
+# CONTRIBUTIONS
+# ─────────────────────────────────────────────
+
+class ContributionListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated, IsFinanceOfficerOrAbove]
+
+    def get_serializer_class(self):
+        return ContributionCreateSerializer if self.request.method == 'POST' else ContributionSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = Contribution.objects.select_related('member').order_by('-period_year', '-period_month')
+        if user.role != UserRole.SUPER_ADMIN and user.branch:
+            qs = qs.filter(member__branch=user.branch)
+        member_id = self.request.query_params.get('member')
+        year = self.request.query_params.get('year')
+        month = self.request.query_params.get('month')
+        if member_id:
+            qs = qs.filter(member__id=member_id)
+        if year:
+            qs = qs.filter(period_year=year)
+        if month:
+            qs = qs.filter(period_month=month)
+        return qs
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
+
+class ContributionDetailView(generics.RetrieveUpdateAPIView):
+    permission_classes = [IsAuthenticated, IsFinanceOfficerOrAbove]
+    serializer_class = ContributionSerializer
+    queryset = Contribution.objects.select_related('member')
+
+
+# ─────────────────────────────────────────────
+# LOANS
+# ─────────────────────────────────────────────
+
+class LoanProductListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated, IsBranchAdminOrAbove]
+    serializer_class = LoanProductSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = LoanProduct.objects.filter(is_active=True)
+        if user.role != UserRole.SUPER_ADMIN and user.branch:
+            qs = qs.filter(branch=user.branch)
+        return qs
+
+
+class LoanListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated, IsFinanceOfficerOrAbove]
+
+    def get_serializer_class(self):
+        return LoanCreateSerializer if self.request.method == 'POST' else LoanListSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = Loan.objects.select_related('member', 'product').order_by('-created_at')
+        if user.role != UserRole.SUPER_ADMIN and user.branch:
+            qs = qs.filter(branch=user.branch)
+        status_f = self.request.query_params.get('status')
+        member_id = self.request.query_params.get('member')
+        if status_f:
+            qs = qs.filter(status=status_f)
+        if member_id:
+            qs = qs.filter(member__id=member_id)
+        return qs
+
+    def perform_create(self, serializer):
+        loan = serializer.save(created_by=self.request.user, status=LoanStatus.PENDING)
+        # Auto-create approval request
+        ApprovalRequest.objects.create(
+            branch=loan.branch,
+            action_type='LOAN',
+            reference_id=loan.id,
+            reference_model='Loan',
+            requested_by=self.request.user,
+            reason=f'Loan application {loan.loan_number} for {loan.member.full_name}',
+            payload={'loan_number': loan.loan_number, 'principal': str(loan.principal)},
+        )
+        log_audit(user=self.request.user, action='CREATE_LOAN',
+                  model_name='Loan', object_id=str(loan.id),
+                  new_value={'loan_number': loan.loan_number, 'principal': str(loan.principal)})
+
+
+class LoanDetailView(generics.RetrieveUpdateAPIView):
+    permission_classes = [IsAuthenticated, IsFinanceOfficerOrAbove]
+    queryset = Loan.objects.select_related('member', 'product', 'approved_by')
+
+    def get_serializer_class(self):
+        return LoanCreateSerializer if self.request.method in ['PUT', 'PATCH'] else LoanDetailSerializer
+
+
+class LoanApproveView(views.APIView):
+    permission_classes = [IsAuthenticated, IsBranchAdminOrAbove]
+
+    def post(self, request, pk):
+        try:
+            loan = Loan.objects.get(pk=pk)
+        except Loan.DoesNotExist:
+            return Response({'detail': 'Loan not found.'}, status=404)
+
+        if loan.approval_status != ApprovalStatus.PENDING:
+            return Response({'detail': 'Loan is not in PENDING state.'}, status=400)
+
+        serializer = LoanApproveSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        loan.approval_status = ApprovalStatus.APPROVED
+        loan.status = LoanStatus.APPROVED
+        loan.approved_by = request.user
+        loan.notes = serializer.validated_data.get('notes', loan.notes)
+        loan.save()
+
+        ApprovalRequest.objects.filter(
+            reference_id=loan.id, action_type='LOAN', status='PENDING'
+        ).update(
+            status=ApprovalStatus.APPROVED,
+            reviewed_by=request.user,
+            reviewed_at=timezone.now(),
+        )
+
+        log_audit(user=request.user, action='APPROVE_LOAN',
+                  model_name='Loan', object_id=str(loan.id))
+        return Response(LoanDetailSerializer(loan).data)
+
+
+class LoanDisburseView(views.APIView):
+    permission_classes = [IsAuthenticated, IsBranchAdminOrAbove]
+
+    def post(self, request, pk):
+        try:
+            loan = Loan.objects.get(pk=pk)
+        except Loan.DoesNotExist:
+            return Response({'detail': 'Loan not found.'}, status=404)
+
+        if loan.status != LoanStatus.APPROVED:
+            return Response({'detail': 'Loan must be APPROVED before disbursement.'}, status=400)
+
+        serializer = LoanDisburseSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        disbursement_date = serializer.validated_data['disbursement_date']
+        from dateutil.relativedelta import relativedelta
+        loan.status = LoanStatus.DISBURSED
+        loan.disbursement_date = disbursement_date
+        loan.maturity_date = disbursement_date + relativedelta(months=loan.product.duration_months)
+        loan.save()
+
+        log_audit(user=request.user, action='DISBURSE_LOAN',
+                  model_name='Loan', object_id=str(loan.id),
+                  new_value={'disbursement_date': str(disbursement_date)})
+        return Response(LoanDetailSerializer(loan).data)
+
+
+# ─────────────────────────────────────────────
+# PENALTIES
+# ─────────────────────────────────────────────
+
+class PenaltyListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated, IsFinanceOfficerOrAbove]
+    serializer_class = PenaltySerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = Penalty.objects.select_related('member', 'waived_by').order_by('-created_at')
+        if user.role != UserRole.SUPER_ADMIN and user.branch:
+            qs = qs.filter(branch=user.branch)
+        return qs
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
+
+class PenaltyWaiveView(views.APIView):
+    permission_classes = [IsAuthenticated, IsBranchAdminOrAbove]
+
+    def post(self, request, pk):
+        try:
+            penalty = Penalty.objects.get(pk=pk)
+        except Penalty.DoesNotExist:
+            return Response({'detail': 'Penalty not found.'}, status=404)
+
+        if penalty.is_waived:
+            return Response({'detail': 'Penalty already waived.'}, status=400)
+
+        serializer = PenaltyWaiveSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        penalty.is_waived = True
+        penalty.waived_by = request.user
+        penalty.waived_at = timezone.now()
+        penalty.waiver_reason = serializer.validated_data['waiver_reason']
+        penalty.save()
+
+        log_audit(user=request.user, action='WAIVE_PENALTY',
+                  model_name='Penalty', object_id=str(penalty.id))
+        return Response(PenaltySerializer(penalty).data)
+
+
+# ─────────────────────────────────────────────
+# ANNUAL DISTRIBUTION
+# ─────────────────────────────────────────────
+
+class AnnualDistributionListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated, IsBranchAdminOrAbove]
+    serializer_class = AnnualDistributionSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = AnnualDistribution.objects.order_by('-year')
+        if user.role != UserRole.SUPER_ADMIN and user.branch:
+            qs = qs.filter(branch=user.branch)
+        return qs
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
+
+class AnnualDistributionDetailView(generics.RetrieveUpdateAPIView):
+    permission_classes = [IsAuthenticated, IsBranchAdminOrAbove]
+    serializer_class = AnnualDistributionSerializer
+    queryset = AnnualDistribution.objects.prefetch_related('entries__member')
+
+
+# ─────────────────────────────────────────────
+# WEALTH ALLIANCE — INVESTORS
+# ─────────────────────────────────────────────
+
+class InvestorListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated, IsFinanceOfficerOrAbove]
+
+    def get_serializer_class(self):
+        return InvestorCreateSerializer if self.request.method == 'POST' else InvestorListSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = Investor.objects.select_related('branch').order_by('-join_date')
+        if user.role != UserRole.SUPER_ADMIN and user.branch:
+            qs = qs.filter(branch=user.branch)
+        search = self.request.query_params.get('search')
+        if search:
+            qs = qs.filter(
+                Q(full_name__icontains=search) |
+                Q(investor_number__icontains=search) |
+                Q(phone__icontains=search)
+            )
+        return qs
+
+    def perform_create(self, serializer):
+        investor = serializer.save(created_by=self.request.user)
+        log_audit(user=self.request.user, action='CREATE_INVESTOR',
+                  model_name='Investor', object_id=str(investor.id))
+
+
+class InvestorDetailView(generics.RetrieveUpdateAPIView):
+    permission_classes = [IsAuthenticated, IsFinanceOfficerOrAbove]
+    queryset = Investor.objects.select_related('branch', 'user')
+
+    def get_serializer_class(self):
+        return InvestorCreateSerializer if self.request.method in ['PUT', 'PATCH'] else InvestorDetailSerializer
+
+
+class InvestmentTransactionListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated, IsFinanceOfficerOrAbove]
+    serializer_class = InvestmentTransactionSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = InvestmentTransaction.objects.select_related('investor', 'asset_class').order_by('-transaction_date')
+        if user.role != UserRole.SUPER_ADMIN and user.branch:
+            qs = qs.filter(branch=user.branch)
+        investor_id = self.request.query_params.get('investor')
+        if investor_id:
+            qs = qs.filter(investor__id=investor_id)
+        return qs
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
+
+class DividendDeclarationListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated, IsBranchAdminOrAbove]
+    serializer_class = DividendDeclarationSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = DividendDeclaration.objects.order_by('-declaration_date')
+        if user.role != UserRole.SUPER_ADMIN and user.branch:
+            qs = qs.filter(branch=user.branch)
+        return qs
+
+    @transaction.atomic
+    def perform_create(self, serializer):
+        declaration = serializer.save(created_by=self.request.user)
+        # Auto-compute per-investor dividends
+        branch = declaration.branch
+        investors = Investor.objects.filter(branch=branch, status='ACTIVE')
+        total_capital = sum(inv.current_capital for inv in investors) or Decimal('1')
+        declaration.total_capital = total_capital
+        declaration.save(update_fields=['total_capital'])
+        for investor in investors:
+            cap = investor.current_capital
+            share_pct = (cap / total_capital * 100) if total_capital else 0
+            dividend_amount = declaration.pool_amount * (cap / total_capital) if total_capital else 0
+            InvestorDividend.objects.create(
+                declaration=declaration,
+                investor=investor,
+                investor_share_pct=share_pct,
+                dividend_amount=dividend_amount,
+                created_by=self.request.user,
+            )
+
+
+class DividendDeclarationDetailView(generics.RetrieveUpdateAPIView):
+    permission_classes = [IsAuthenticated, IsBranchAdminOrAbove]
+    serializer_class = DividendDeclarationSerializer
+    queryset = DividendDeclaration.objects.prefetch_related('investor_dividends__investor')
+
+
+class InvestorWithdrawalListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated, IsFinanceOfficerOrAbove]
+    serializer_class = InvestorWithdrawalSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = InvestorWithdrawal.objects.select_related('investor').order_by('-created_at')
+        if user.role != UserRole.SUPER_ADMIN and user.branch:
+            qs = qs.filter(branch=user.branch)
+        return qs
+
+    def perform_create(self, serializer):
+        withdrawal = serializer.save(created_by=self.request.user)
+        ApprovalRequest.objects.create(
+            branch=withdrawal.branch,
+            action_type='WITHDRAWAL',
+            reference_id=withdrawal.id,
+            reference_model='InvestorWithdrawal',
+            requested_by=self.request.user,
+            reason=f'Withdrawal request by {withdrawal.investor.full_name}',
+            payload={'amount': str(withdrawal.amount_requested), 'type': withdrawal.withdrawal_type},
+        )
+
+
+# ─────────────────────────────────────────────
+# TABLE BANKING
+# ─────────────────────────────────────────────
+
+class TableBankingMemberListView(generics.ListAPIView):
+    permission_classes = [IsAuthenticated, IsFinanceOfficerOrAbove]
+    serializer_class = TableBankingMemberSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = Member.objects.filter(
+            branch__branch_type=BranchType.TABLE_BANKING
+        ).select_related('branch')
+        if user.role != UserRole.SUPER_ADMIN and user.branch:
+            qs = qs.filter(branch=user.branch)
+        return qs
+
+
+class TableBankingLendingFundView(views.APIView):
+    permission_classes = [IsAuthenticated, IsFinanceOfficerOrAbove]
+
+    def get(self, request):
+        user = request.user
+        branches = Branch.objects.filter(branch_type=BranchType.TABLE_BANKING)
+        if user.role != UserRole.SUPER_ADMIN and user.branch:
+            branches = branches.filter(id=user.branch_id)
+
+        results = []
+        for branch in branches:
+            members = Member.objects.filter(branch=branch)
+            total_contrib = Contribution.objects.filter(
+                member__in=members, status='POSTED'
+            ).aggregate(t=Sum('paid'))['t'] or Decimal('0')
+
+            total_interest = LoanRepayment.objects.filter(
+                loan__branch=branch
+            ).aggregate(t=Sum('interest_paid'))['t'] or Decimal('0')
+
+            outstanding_loans = Loan.objects.filter(
+                branch=branch,
+                status__in=['PERFORMING', 'DISBURSED', 'WATCHLIST', 'OVERDUE']
+            ).aggregate(t=Sum('balance'))['t'] or Decimal('0')
+
+            total_withdrawals = InvestorWithdrawal.objects.filter(
+                branch=branch, status='PAID'
+            ).aggregate(t=Sum('amount_paid'))['t'] or Decimal('0')
+
+            results.append({
+                'branch_id': str(branch.id),
+                'branch_name': branch.name,
+                'total_contributions': total_contrib,
+                'total_interest': total_interest,
+                'outstanding_loans': outstanding_loans,
+                'total_withdrawals': total_withdrawals,
+                'total_charges': Decimal('0'),
+                'available_fund': total_contrib + total_interest - outstanding_loans - total_withdrawals,
+            })
+
+        return Response(TableBankingLendingFundSerializer(results, many=True).data)
+
+
+# ─────────────────────────────────────────────
+# RENTALS
+# ─────────────────────────────────────────────
+
+class PropertyListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated, IsFinanceOfficerOrAbove]
+    serializer_class = PropertySerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = Property.objects.select_related('branch', 'property_manager').order_by('name')
+        if user.role != UserRole.SUPER_ADMIN and user.branch:
+            qs = qs.filter(branch=user.branch)
+        return qs
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
+
+class PropertyDetailView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [IsAuthenticated, IsBranchAdminOrAbove]
+    serializer_class = PropertySerializer
+    queryset = Property.objects.select_related('branch')
+
+
+class UnitListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated, IsFinanceOfficerOrAbove]
+    serializer_class = UnitSerializer
+
+    def get_queryset(self):
+        qs = Unit.objects.select_related('property').order_by('property', 'unit_number')
+        property_id = self.request.query_params.get('property')
+        if property_id:
+            qs = qs.filter(property__id=property_id)
+        occupancy = self.request.query_params.get('occupancy_status')
+        if occupancy:
+            qs = qs.filter(occupancy_status=occupancy)
+        return qs
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
+
+class UnitDetailView(generics.RetrieveUpdateAPIView):
+    permission_classes = [IsAuthenticated, IsFinanceOfficerOrAbove]
+    serializer_class = UnitSerializer
+    queryset = Unit.objects.select_related('property')
+
+
+class TenantListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated, IsFinanceOfficerOrAbove]
+
+    def get_serializer_class(self):
+        return TenantCreateSerializer if self.request.method == 'POST' else TenantListSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = Tenant.objects.select_related('branch', 'unit').order_by('-move_in_date')
+        if user.role != UserRole.SUPER_ADMIN and user.branch:
+            qs = qs.filter(branch=user.branch)
+        search = self.request.query_params.get('search')
+        if search:
+            qs = qs.filter(
+                Q(full_name__icontains=search) |
+                Q(tenant_number__icontains=search) |
+                Q(phone__icontains=search)
+            )
+        return qs
+
+    def perform_create(self, serializer):
+        tenant = serializer.save(created_by=self.request.user)
+        if tenant.unit:
+            tenant.unit.occupancy_status = 'OCCUPIED'
+            tenant.unit.save(update_fields=['occupancy_status'])
+
+
+class TenantDetailView(generics.RetrieveUpdateAPIView):
+    permission_classes = [IsAuthenticated, IsFinanceOfficerOrAbove]
+    queryset = Tenant.objects.select_related('branch', 'unit')
+
+    def get_serializer_class(self):
+        return TenantCreateSerializer if self.request.method in ['PUT', 'PATCH'] else TenantDetailSerializer
+
+
+class LeaseListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated, IsFinanceOfficerOrAbove]
+    serializer_class = LeaseSerializer
+
+    def get_queryset(self):
+        qs = Lease.objects.select_related('tenant', 'unit').order_by('-start_date')
+        tenant_id = self.request.query_params.get('tenant')
+        unit_id = self.request.query_params.get('unit')
+        if tenant_id:
+            qs = qs.filter(tenant__id=tenant_id)
+        if unit_id:
+            qs = qs.filter(unit__id=unit_id)
+        return qs
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
+
+class LeaseDetailView(generics.RetrieveUpdateAPIView):
+    permission_classes = [IsAuthenticated, IsFinanceOfficerOrAbove]
+    serializer_class = LeaseSerializer
+    queryset = Lease.objects.select_related('tenant', 'unit')
+
+
+class RentCollectionListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated, IsFinanceOfficerOrAbove]
+    serializer_class = RentCollectionSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = RentCollection.objects.select_related('tenant', 'unit').order_by('-period_year', '-period_month')
+        if user.role != UserRole.SUPER_ADMIN and user.branch:
+            qs = qs.filter(tenant__branch=user.branch)
+        tenant_id = self.request.query_params.get('tenant')
+        year = self.request.query_params.get('year')
+        month = self.request.query_params.get('month')
+        if tenant_id:
+            qs = qs.filter(tenant__id=tenant_id)
+        if year:
+            qs = qs.filter(period_year=year)
+        if month:
+            qs = qs.filter(period_month=month)
+        return qs
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
+
+class MaintenanceRequestListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = MaintenanceRequestSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = MaintenanceRequest.objects.select_related('unit', 'tenant').order_by('-created_at')
+        if user.role == UserRole.TENANT:
+            try:
+                qs = qs.filter(tenant=user.tenant)
+            except Exception:
+                return qs.none()
+        elif user.role != UserRole.SUPER_ADMIN and user.branch:
+            qs = qs.filter(unit__property__branch=user.branch)
+        status_f = self.request.query_params.get('status')
+        if status_f:
+            qs = qs.filter(status=status_f)
+        return qs
+
+    def perform_create(self, serializer):
+        user = self.request.user
+        if user.role == UserRole.TENANT:
+            try:
+                serializer.save(tenant=user.tenant, created_by=user)
+            except Exception:
+                serializer.save(created_by=user)
+        else:
+            serializer.save(created_by=user)
+
+
+class MaintenanceRequestDetailView(generics.RetrieveUpdateAPIView):
+    permission_classes = [IsAuthenticated, IsFinanceOfficerOrAbove]
+    serializer_class = MaintenanceRequestSerializer
+    queryset = MaintenanceRequest.objects.select_related('unit', 'tenant')
+
+
+# ─────────────────────────────────────────────
+# MPESA ENGINE
+# ─────────────────────────────────────────────
+
+class MPESACallbackView(views.APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        payload = request.data
+        try:
+            self._process_callback(payload)
+        except Exception as e:
+            return Response({'ResultCode': 1, 'ResultDesc': str(e)})
+        return Response({'ResultCode': 0, 'ResultDesc': 'Success'})
+
+    def _process_callback(self, payload):
+        from .utils import allocate_mpesa_transaction
+        body = payload.get('Body', {})
+        stk = body.get('stkCallback', body.get('C2BPayment', {}))
+
+        result_code = stk.get('ResultCode', 1)
+        if result_code != 0:
+            return
+
+        items = {
+            item['Name']: item.get('Value')
+            for item in stk.get('CallbackMetadata', {}).get('Item', [])
+        }
+        mpesa_ref = items.get('MpesaReceiptNumber') or stk.get('TransID', '')
+        amount = Decimal(str(items.get('Amount', stk.get('TransAmount', 0))))
+        phone = str(items.get('PhoneNumber', stk.get('MSISDN', ''))).lstrip('+')
+        sender = items.get('Name', stk.get('FirstName', ''))
+        account_ref = items.get('AccountReference', stk.get('BillRefNumber', ''))
+
+        if MPESATransaction.objects.filter(mpesa_ref=mpesa_ref).exists():
+            return
+
+        txn = MPESATransaction.objects.create(
+            mpesa_ref=mpesa_ref,
+            phone=phone,
+            amount=amount,
+            transaction_date=timezone.now(),
+            sender_name=sender,
+            account_ref=account_ref,
+            raw_payload=payload,
+        )
+        allocate_mpesa_transaction(txn)
+
+
+class MPESAQueueView(generics.ListAPIView):
+    permission_classes = [IsAuthenticated, IsFinanceOfficerOrAbove]
+    serializer_class = MPESATransactionSerializer
+
+    def get_queryset(self):
+        confidence = self.request.query_params.get('confidence', MPESAConfidence.REVIEW)
+        qs = MPESATransaction.objects.filter(
+            confidence=confidence, is_allocated=False
+        ).order_by('-transaction_date')
+        user = self.request.user
+        if user.role != UserRole.SUPER_ADMIN and user.branch:
+            qs = qs.filter(branch=user.branch)
+        return qs
+
+
+class MPESAExceptionView(generics.ListAPIView):
+    permission_classes = [IsAuthenticated, IsFinanceOfficerOrAbove]
+    serializer_class = MPESATransactionSerializer
+
+    def get_queryset(self):
+        return MPESATransaction.objects.filter(
+            confidence=MPESAConfidence.EXCEPTION, is_allocated=False
+        ).order_by('-transaction_date')
+
+
+class MPESAUploadView(views.APIView):
+    permission_classes = [IsAuthenticated, IsFinanceOfficerOrAbove]
+
+    def post(self, request):
+        serializer = MPESAUploadSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        branch_id = serializer.validated_data['branch']
+        csv_file = serializer.validated_data['file']
+
+        try:
+            branch = Branch.objects.get(id=branch_id)
+        except Branch.DoesNotExist:
+            return Response({'detail': 'Branch not found.'}, status=404)
+
+        decoded = csv_file.read().decode('utf-8')
+        reader = csv.DictReader(io.StringIO(decoded))
+
+        created, skipped = 0, 0
+        from .utils import allocate_mpesa_transaction
+        for row in reader:
+            mpesa_ref = row.get('receipt', row.get('mpesa_ref', '')).strip()
+            if not mpesa_ref:
+                skipped += 1
+                continue
+            if MPESATransaction.objects.filter(mpesa_ref=mpesa_ref).exists():
+                skipped += 1
+                continue
+            try:
+                txn = MPESATransaction.objects.create(
+                    branch=branch,
+                    mpesa_ref=mpesa_ref,
+                    phone=row.get('phone', '').strip(),
+                    amount=Decimal(row.get('amount', '0').replace(',', '')),
+                    transaction_date=timezone.now(),
+                    sender_name=row.get('sender', row.get('name', '')).strip(),
+                    account_ref=row.get('account_ref', row.get('ref', '')).strip(),
+                    raw_payload=dict(row),
+                )
+                allocate_mpesa_transaction(txn)
+                created += 1
+            except Exception:
+                skipped += 1
+
+        return Response({'created': created, 'skipped': skipped})
+
+
+class MPESAManualAllocateView(views.APIView):
+    permission_classes = [IsAuthenticated, IsFinanceOfficerOrAbove]
+
+    @transaction.atomic
+    def post(self, request):
+        serializer = MPESAManualAllocateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            txn = MPESATransaction.objects.get(id=serializer.validated_data['mpesa_transaction_id'])
+            member = Member.objects.get(id=serializer.validated_data['member_id'])
+        except (MPESATransaction.DoesNotExist, Member.DoesNotExist) as e:
+            return Response({'detail': str(e)}, status=404)
+
+        if txn.is_allocated:
+            return Response({'detail': 'Transaction already allocated.'}, status=400)
+
+        from .utils import allocate_payment_to_member
+        allocate_payment_to_member(txn, member)
+
+        txn.matched_member = member
+        txn.is_allocated = True
+        txn.allocation_notes = serializer.validated_data.get('notes', 'Manual allocation')
+        txn.save()
+
+        log_audit(user=request.user, action='MANUAL_ALLOCATE_MPESA',
+                  model_name='MPESATransaction', object_id=str(txn.id),
+                  new_value={'member': str(member.id), 'amount': str(txn.amount)})
+        return Response({'detail': 'Allocated successfully.'})
+
+
+# ─────────────────────────────────────────────
+# APPROVALS
+# ─────────────────────────────────────────────
+
+class ApprovalListView(generics.ListAPIView):
+    permission_classes = [IsAuthenticated, IsFinanceOfficerOrAbove]
+    serializer_class = ApprovalRequestSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = ApprovalRequest.objects.select_related(
+            'requested_by', 'reviewed_by', 'branch'
+        ).order_by('-created_at')
+        if user.role != UserRole.SUPER_ADMIN and user.branch:
+            qs = qs.filter(branch=user.branch)
+        status_f = self.request.query_params.get('status', 'PENDING')
+        action_type = self.request.query_params.get('action_type')
+        if status_f:
+            qs = qs.filter(status=status_f)
+        if action_type:
+            qs = qs.filter(action_type=action_type)
+        return qs
+
+
+class ApprovalApproveView(views.APIView):
+    permission_classes = [IsAuthenticated, IsBranchAdminOrAbove]
+
+    def post(self, request, pk):
+        try:
+            approval = ApprovalRequest.objects.get(pk=pk, status='PENDING')
+        except ApprovalRequest.DoesNotExist:
+            return Response({'detail': 'Approval request not found or not pending.'}, status=404)
+
+        approval.status = ApprovalStatus.APPROVED
+        approval.reviewed_by = request.user
+        approval.reviewed_at = timezone.now()
+        approval.reason = request.data.get('notes', '')
+        approval.save()
+
+        log_audit(user=request.user, action='APPROVE_REQUEST',
+                  model_name='ApprovalRequest', object_id=str(approval.id))
+        return Response(ApprovalRequestSerializer(approval).data)
+
+
+class ApprovalRejectView(views.APIView):
+    permission_classes = [IsAuthenticated, IsBranchAdminOrAbove]
+
+    def post(self, request, pk):
+        try:
+            approval = ApprovalRequest.objects.get(pk=pk, status='PENDING')
+        except ApprovalRequest.DoesNotExist:
+            return Response({'detail': 'Approval request not found or not pending.'}, status=404)
+
+        serializer = ApprovalRejectSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        approval.status = ApprovalStatus.REJECTED
+        approval.reviewed_by = request.user
+        approval.reviewed_at = timezone.now()
+        approval.rejection_note = serializer.validated_data['rejection_note']
+        approval.save()
+
+        log_audit(user=request.user, action='REJECT_REQUEST',
+                  model_name='ApprovalRequest', object_id=str(approval.id))
+        return Response(ApprovalRequestSerializer(approval).data)
+
+
+# ─────────────────────────────────────────────
+# AUDIT LOG
+# ─────────────────────────────────────────────
+
+class AuditLogListView(generics.ListAPIView):
+    permission_classes = [IsAuthenticated, IsAuditorOrAbove]
+    serializer_class = AuditLogSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = AuditLog.objects.select_related('user', 'branch').order_by('-timestamp')
+        if user.role != UserRole.SUPER_ADMIN and user.branch:
+            qs = qs.filter(branch=user.branch)
+        action = self.request.query_params.get('action')
+        model = self.request.query_params.get('model')
+        user_id = self.request.query_params.get('user')
+        date_from = self.request.query_params.get('date_from')
+        date_to = self.request.query_params.get('date_to')
+        if action:
+            qs = qs.filter(action__icontains=action)
+        if model:
+            qs = qs.filter(model_name=model)
+        if user_id:
+            qs = qs.filter(user__id=user_id)
+        if date_from:
+            qs = qs.filter(timestamp__date__gte=date_from)
+        if date_to:
+            qs = qs.filter(timestamp__date__lte=date_to)
+        return qs
+
+
+# ─────────────────────────────────────────────
+# REPORTS
+# ─────────────────────────────────────────────
+
+class ReportView(views.APIView):
+    permission_classes = [IsAuthenticated, IsAuditorOrAbove]
+
+    def get(self, request, report_type):
+        fmt = request.query_params.get('format', 'json')
+        branch_id = request.query_params.get('branch')
+        year = request.query_params.get('year')
+        month = request.query_params.get('month')
+
+        generators = {
+            'contributions': self._contributions_report,
+            'loans': self._loans_report,
+            'arrears': self._arrears_report,
+            'members': self._members_report,
+            'rent-collection': self._rent_collection_report,
+        }
+
+        if report_type not in generators:
+            return Response({'detail': f'Unknown report type: {report_type}'}, status=400)
+
+        data = generators[report_type](branch_id, year, month)
+
+        if fmt == 'json':
+            return Response(data)
+        elif fmt == 'csv':
+            return self._csv_response(data, report_type)
+        else:
+            return Response({'detail': 'Unsupported format. Use json or csv.'}, status=400)
+
+    def _contributions_report(self, branch_id, year, month):
+        qs = Contribution.objects.select_related('member__branch')
+        if branch_id:
+            qs = qs.filter(member__branch__id=branch_id)
+        if year:
+            qs = qs.filter(period_year=year)
+        if month:
+            qs = qs.filter(period_month=month)
+        return ContributionSerializer(qs, many=True).data
+
+    def _loans_report(self, branch_id, year, month):
+        qs = Loan.objects.select_related('member', 'product')
+        if branch_id:
+            qs = qs.filter(branch__id=branch_id)
+        return LoanListSerializer(qs, many=True).data
+
+    def _arrears_report(self, branch_id, year, month):
+        qs = Contribution.objects.filter(arrears__gt=0).select_related('member__branch')
+        if branch_id:
+            qs = qs.filter(member__branch__id=branch_id)
+        return ContributionSerializer(qs, many=True).data
+
+    def _members_report(self, branch_id, year, month):
+        qs = Member.objects.select_related('branch')
+        if branch_id:
+            qs = qs.filter(branch__id=branch_id)
+        return MemberListSerializer(qs, many=True).data
+
+    def _rent_collection_report(self, branch_id, year, month):
+        qs = RentCollection.objects.select_related('tenant', 'unit')
+        if branch_id:
+            qs = qs.filter(tenant__branch__id=branch_id)
+        if year:
+            qs = qs.filter(period_year=year)
+        if month:
+            qs = qs.filter(period_month=month)
+        return RentCollectionSerializer(qs, many=True).data
+
+    def _csv_response(self, data, report_type):
+        from django.http import HttpResponse
+        response = HttpResponse(content_type='text/csv')
+        response['Content-Disposition'] = f'attachment; filename="{report_type}.csv"'
+        if not data:
+            return response
+        writer = csv.DictWriter(response, fieldnames=data[0].keys())
+        writer.writeheader()
+        writer.writerows(data)
+        return response
+
+
+# ─────────────────────────────────────────────
+# NOTIFICATIONS
+# ─────────────────────────────────────────────
+
+class NotificationListView(generics.ListAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = NotificationSerializer
+
+    def get_queryset(self):
+        return Notification.objects.filter(
+            user=self.request.user
+        ).order_by('-created_at')
+
+
+class NotificationMarkReadView(views.APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        try:
+            notif = Notification.objects.get(pk=pk, user=request.user)
+        except Notification.DoesNotExist:
+            return Response({'detail': 'Notification not found.'}, status=404)
+        notif.is_read = True
+        notif.save(update_fields=['is_read'])
+        return Response({'detail': 'Marked as read.'})
+
+
+class NotificationMarkAllReadView(views.APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        Notification.objects.filter(user=request.user, is_read=False).update(is_read=True)
+        return Response({'detail': 'All notifications marked as read.'})
