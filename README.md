@@ -22,55 +22,124 @@ A modern, premium, mobile-first business and financial management platform for m
 ```
 kilele/
 ├── backend/
-│   ├── core/                        # Single Django app
+│   ├── core/                            # Single Django app
 │   │   ├── migrations/
 │   │   ├── __init__.py
-│   │   ├── models.py                # All models
-│   │   ├── serializers.py           # All serializers
-│   │   ├── views.py                 # All views
-│   │   ├── urls.py                  # App URLs
-│   │   ├── permissions.py           # Custom permissions
-│   │   ├── utils.py                 # Helpers (OTP, MPESA, etc.)
+│   │   ├── models.py                    # All models
+│   │   ├── serializers.py               # All serializers
+│   │   ├── views.py                     # All views
+│   │   ├── urls.py                      # App URLs
+│   │   ├── permissions.py               # Custom role-based permissions
+│   │   ├── utils.py                     # Helpers (OTP, MPESA, allocation engine)
 │   │   └── admin.py
 │   ├── kilele/
 │   │   ├── __init__.py
 │   │   ├── settings.py
-│   │   ├── urls.py                  # Root URL config
+│   │   ├── urls.py                      # Root URL config
 │   │   └── wsgi.py
 │   ├── requirements.txt
 │   └── manage.py
 │
 └── frontend/
-    ├── index.html
+    ├── index.html                        # Bootstrap Icons CDN included
     ├── vite.config.js
     ├── package.json
     └── src/
         ├── main.jsx
-        ├── App.jsx
+        ├── App.jsx                       # Routes + role-based layout guard
         ├── styles/
-        │   └── main.css
+        │   └── main.css                  # Global design system & variables
         ├── services/
-        │   └── api.js               # All API calls
+        │   └── api.js                    # All Axios API calls (auth, all modules)
         ├── components/
-        │   ├── Navbar.jsx
-        │   └── Sidebar.jsx
+        │   ├── Navbar.jsx                # Top bar — logo, user info, notifications
+        │   └── Sidebar.jsx               # Role-aware sidebar (renders menu per role)
+        │                                 #   SUPER_ADMIN    → full menu (all branches)
+        │                                 #   BRANCH_ADMIN   → assigned branch only
+        │                                 #   FINANCE_OFFICER→ transactions & approvals
+        │                                 #   AUDITOR        → read-only audit views
+        │                                 #   MEMBER         → Tujijenge / Table Banking self
+        │                                 #   INVESTOR       → Wealth Alliance self-portal
+        │                                 #   TENANT         → Rentals self-portal
         └── pages/
-            ├── Login.jsx            # Email OTP login
-            ├── Dashboard.jsx        # Role-based dashboard
-            ├── Members.jsx          # Members management
-            ├── Contributions.jsx    # Contributions & arrears
-            ├── Loans.jsx            # Loans management
-            ├── Investments.jsx      # Wealth Alliance
-            ├── TableBanking.jsx     # Table Banking
-            ├── Rentals.jsx          # Properties & tenants
-            ├── Mpesa.jsx            # MPESA engine
-            ├── Reports.jsx          # Reports & exports
-            ├── Approvals.jsx        # Approval queue
-            ├── AuditLog.jsx         # Audit trail
-            ├── Rules.jsx            # Rule engine (Super Admin)
-            ├── Users.jsx            # User management (Super Admin)
-            └── Profile.jsx          # Member self-portal
+            ├── Login.jsx                 # Email input → OTP verify → JWT stored
+            │
+            │── shared/                   # Accessible by multiple roles
+            │   ├── Dashboard.jsx         # Role-aware KPI dashboard
+            │   ├── Profile.jsx           # Any user — own profile & password
+            │   ├── Notifications.jsx     # In-app notification centre
+            │   └── NotFound.jsx          # 404 page
+            │
+            ├── super-admin/              # SUPER_ADMIN only
+            │   ├── SuperDashboard.jsx    # Group KPIs + all branch cards
+            │   ├── Branches.jsx          # Create / edit / disable branches
+            │   ├── Users.jsx             # Create users, assign roles & branches
+            │   ├── Rules.jsx             # Rule engine — edit any business rule
+            │   ├── AuditLog.jsx          # Full system audit trail
+            │   └── SystemSettings.jsx    # Global settings, themes, CMS
+            │
+            ├── tujijenge/                # SUPER_ADMIN, BRANCH_ADMIN, FINANCE_OFFICER
+            │   ├── TujijengeMembers.jsx  # Member list, registration, shares
+            │   ├── Contributions.jsx     # Monthly contributions, arrears, interest
+            │   ├── Loans.jsx             # Loan applications, approvals, repayments
+            │   ├── Penalties.jsx         # Penalties & waivers
+            │   ├── Distribution.jsx      # Annual distribution simulation & posting
+            │   └── TujijengeReports.jsx  # Contribution, loan, arrears, audit reports
+            │
+            ├── wealth-alliance/          # SUPER_ADMIN, BRANCH_ADMIN, FINANCE_OFFICER
+            │   ├── Investors.jsx         # Investor list & capital accounts
+            │   ├── Investments.jsx       # Investment transactions & asset classes
+            │   ├── Dividends.jsx         # Declare dividend pool, per-investor split
+            │   ├── Withdrawals.jsx       # Withdrawal requests & approvals
+            │   └── WealthReports.jsx     # Portfolio, ROI, dividend, audit reports
+            │
+            ├── table-banking/            # SUPER_ADMIN, BRANCH_ADMIN, FINANCE_OFFICER
+            │   ├── TBMembers.jsx         # Member list & registration
+            │   ├── TBContributions.jsx   # Contributions & lending fund tracker
+            │   ├── TBLoans.jsx           # Loans, repayments, interest
+            │   └── TBReports.jsx         # Collection, loan, arrears reports
+            │
+            ├── rentals/                  # SUPER_ADMIN, BRANCH_ADMIN, FINANCE_OFFICER
+            │   ├── Properties.jsx        # Property list, add/edit property
+            │   ├── Units.jsx             # Unit management per property
+            │   ├── Tenants.jsx           # Tenant registration & leases
+            │   ├── RentCollection.jsx    # Monthly rent billing & payments
+            │   ├── Maintenance.jsx       # Maintenance requests & costs
+            │   └── RentalsReports.jsx    # Collection, arrears, profitability reports
+            │
+            ├── mpesa/                    # SUPER_ADMIN, BRANCH_ADMIN, FINANCE_OFFICER
+            │   ├── MpesaQueue.jsx        # Review queue (70–89% confidence)
+            │   ├── MpesaExceptions.jsx   # Exception queue (<70% confidence)
+            │   └── MpesaUpload.jsx       # CSV bulk upload & manual posting
+            │
+            ├── approvals/                # SUPER_ADMIN, BRANCH_ADMIN, FINANCE_OFFICER
+            │   └── Approvals.jsx         # Pending loans, withdrawals, waivers, exits
+            │
+            ├── reports/                  # SUPER_ADMIN, BRANCH_ADMIN, AUDITOR
+            │   └── Reports.jsx           # Cross-branch report generator (PDF/Excel/CSV)
+            │
+            └── member-portal/            # MEMBER, INVESTOR, TENANT (own data only)
+                ├── MyDashboard.jsx       # Balance, amount due, due date, alerts
+                ├── MyStatement.jsx       # Full personal statement
+                ├── MyLoans.jsx           # Own loan status & repayment history
+                ├── MyContributions.jsx   # Own contribution history (MEMBER)
+                ├── MyInvestment.jsx      # Capital, ROI, dividends (INVESTOR)
+                ├── MyLease.jsx           # Lease details, rent history (TENANT)
+                ├── MyRequests.jsx        # Submit loan / withdrawal / waiver requests
+                └── MyDocuments.jsx       # Download statements & documents
 ```
+
+### Sidebar Menu Map (per role)
+
+| Role             | Sidebar Sections                                                                         |
+|------------------|------------------------------------------------------------------------------------------|
+| SUPER_ADMIN      | Dashboard · Branches · Tujijenge · Wealth Alliance · Table Banking · Rentals · M-Pesa · Approvals · Reports · Audit Log · Users · Rules · Settings |
+| BRANCH_ADMIN     | Dashboard · (Assigned Branch) · M-Pesa · Approvals · Reports                            |
+| FINANCE_OFFICER  | Dashboard · (Assigned Branch transactions) · M-Pesa · Approvals                         |
+| AUDITOR          | Dashboard · Reports · Audit Log  *(read-only, no create/edit)*                           |
+| MEMBER           | My Dashboard · My Contributions · My Loans · My Statement · My Requests · My Documents  |
+| INVESTOR         | My Dashboard · My Investment · My Dividends · My Withdrawals · My Statement · My Docs   |
+| TENANT           | My Dashboard · My Lease · My Rent History · My Maintenance · My Statement · My Docs     |
 
 ---
 
