@@ -1,0 +1,85 @@
+import { useState } from 'react'
+import { reportsAPI } from '../../services/api'
+
+const REPORTS = [
+  { type: 'rent-collection', label: 'Rent Collection', icon: 'bi-receipt', desc: 'Monthly rent billing and payments' },
+  { type: 'arrears', label: 'Arrears Report', icon: 'bi-exclamation-triangle', desc: 'Tenants with outstanding rent' },
+  { type: 'members', label: 'Profitability', icon: 'bi-graph-up', desc: 'Property income vs maintenance costs' },
+  { type: 'loans', label: 'Occupancy Report', icon: 'bi-building', desc: 'Unit occupancy across all properties' },
+]
+
+export default function RentalsReports() {
+  const [filters, setFilters] = useState({ year: new Date().getFullYear(), month: '' })
+  const [generating, setGenerating] = useState('')
+
+  const handleGenerate = async (type, format) => {
+    setGenerating(`${type}-${format}`)
+    try {
+      if (format === 'csv') {
+        await reportsAPI.downloadCSV(type, filters, `rentals-${type}-${filters.year}.csv`)
+      } else {
+        const res = await reportsAPI.get(type, filters)
+        const blob = new Blob([JSON.stringify(res.data, null, 2)], { type: 'application/json' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `rentals-${type}-${filters.year}.json`
+        a.click()
+        URL.revokeObjectURL(url)
+      }
+    } catch {
+      // silent
+    } finally {
+      setGenerating('')
+    }
+  }
+
+  return (
+    <div>
+      <div className="page-header">
+        <h1 className="page-header__title">Rentals Reports</h1>
+        <p className="page-header__sub">Collection, arrears, occupancy and profitability reports</p>
+      </div>
+
+      <div className="card mb-24">
+        <div className="card__body">
+          <div className="form-row" style={{ alignItems: 'end' }}>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Year</label>
+              <input type="number" className="form-control" value={filters.year} onChange={e => setFilters({ ...filters, year: e.target.value })} />
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Month (optional)</label>
+              <select className="form-control" value={filters.month} onChange={e => setFilters({ ...filters, month: e.target.value })}>
+                <option value="">All Months</option>
+                {Array.from({ length: 12 }, (_, i) => (
+                  <option key={i + 1} value={i + 1}>{new Date(2000, i).toLocaleString('en-KE', { month: 'long' })}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="report-grid">
+        {REPORTS.map(r => (
+          <div key={r.type} className="card report-card">
+            <div className="card__body">
+              <div className="report-card__icon"><i className={`bi ${r.icon}`} /></div>
+              <h3 className="report-card__title">{r.label}</h3>
+              <p className="report-card__desc">{r.desc}</p>
+              <div className="d-flex gap-8 mt-16">
+                <button className="btn btn--secondary btn--sm" onClick={() => handleGenerate(r.type, 'csv')} disabled={generating === `${r.type}-csv`}>
+                  {generating === `${r.type}-csv` ? <span className="spinner spinner--sm" /> : <i className="bi bi-filetype-csv" />} CSV
+                </button>
+                <button className="btn btn--secondary btn--sm" onClick={() => handleGenerate(r.type, 'json')} disabled={generating === `${r.type}-json`}>
+                  {generating === `${r.type}-json` ? <span className="spinner spinner--sm" /> : <i className="bi bi-filetype-json" />} JSON
+                </button>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
