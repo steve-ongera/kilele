@@ -56,7 +56,7 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
-ROOT_URLCONF = 'kilele.urls'
+ROOT_URLCONF = 'backend.urls'
 
 
 # ─────────────────────────────────────────────
@@ -79,7 +79,7 @@ TEMPLATES = [
     },
 ]
 
-WSGI_APPLICATION = 'kilele.wsgi.application'
+WSGI_APPLICATION = 'backend.wsgi.application'
 
 
 # ─────────────────────────────────────────────
