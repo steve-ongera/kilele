@@ -103,10 +103,10 @@ class SystemRuleSerializer(serializers.ModelSerializer):
 class MemberListSerializer(serializers.ModelSerializer):
     branch_name = serializers.CharField(source='branch.name', read_only=True)
     total_contributions = serializers.DecimalField(
-        max_digits=15, decimal_places=2, read_only=True, source='total_contributions'
+        max_digits=15, decimal_places=2, read_only=True
     )
     loan_limit = serializers.DecimalField(
-        max_digits=15, decimal_places=2, read_only=True, source='loan_limit'
+        max_digits=15, decimal_places=2, read_only=True
     )
 
     class Meta:

@@ -244,7 +244,7 @@ class Member(BaseModel):
     @property
     def total_contributions(self):
         return self.contributions.filter(status='POSTED').aggregate(
-            total=models.Sum('amount')
+            total=models.Sum('paid')
         )['total'] or 0
 
     @property
