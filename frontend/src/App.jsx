@@ -4,6 +4,9 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-route
 import Navbar from './components/Navbar'
 import Sidebar from './components/Sidebar'
 
+// ── Landing page (public, loads first) ───────────────────────
+import LandingPage from './pages/LandingPage'
+
 // ── Auth pages ────────────────────────────────────────────────
 import Login from './pages/Login'
 
@@ -171,6 +174,7 @@ function RequireAuth({ children, roles = [] }) {
   }
 
   if (!user) {
+    // Unauthenticated users are sent to login, preserving the intended destination
     return <Navigate to="/login" state={{ from: location }} replace />
   }
 
@@ -181,18 +185,33 @@ function RequireAuth({ children, roles = [] }) {
   return children
 }
 
+/**
+ * RedirectByRole — used at /app (post-login entry point).
+ * If not logged in, falls back to the landing page instead of login
+ * so the public URL "/" always stays clean.
+ */
 function RedirectByRole() {
-  const { user } = useAuth()
+  const { user, loading } = useAuth()
+
+  if (loading) {
+    return (
+      <div className="app-loading">
+        <div className="app-loading__spinner" />
+      </div>
+    )
+  }
+
+  // Not logged in → send to login (they came from /app directly)
   if (!user) return <Navigate to="/login" replace />
 
   const destinations = {
-    [ROLES.SUPER_ADMIN]: '/super-dashboard',
-    [ROLES.BRANCH_ADMIN]: '/dashboard',
+    [ROLES.SUPER_ADMIN]:     '/super-dashboard',
+    [ROLES.BRANCH_ADMIN]:    '/dashboard',
     [ROLES.FINANCE_OFFICER]: '/dashboard',
-    [ROLES.AUDITOR]: '/dashboard',
-    [ROLES.MEMBER]: '/my-dashboard',
-    [ROLES.INVESTOR]: '/my-dashboard',
-    [ROLES.TENANT]: '/my-dashboard',
+    [ROLES.AUDITOR]:         '/dashboard',
+    [ROLES.MEMBER]:          '/my-dashboard',
+    [ROLES.INVESTOR]:        '/my-dashboard',
+    [ROLES.TENANT]:          '/my-dashboard',
   }
 
   return <Navigate to={destinations[user.role] || '/dashboard'} replace />
@@ -252,11 +271,19 @@ function AppShell({ children }) {
 function AppRoutes() {
   return (
     <Routes>
-      {/* Public */}
-      <Route path="/login" element={<Login />} />
-      <Route path="/" element={<RedirectByRole />} />
 
-      {/* ── SUPER ADMIN ── */}
+      {/* ── PUBLIC ────────────────────────────────────────────── */}
+      {/* Landing page — loads first, no auth required */}
+      <Route path="/" element={<LandingPage />} />
+
+      {/* Login page */}
+      <Route path="/login" element={<Login />} />
+
+      {/* Post-login role-based redirect entry point.
+          Login.jsx should navigate('/app') after successful OTP. */}
+      <Route path="/app" element={<RedirectByRole />} />
+
+      {/* ── SUPER ADMIN ───────────────────────────────────────── */}
       <Route path="/super-dashboard" element={
         <RequireAuth roles={[ROLES.SUPER_ADMIN]}>
           <AppShell><SuperDashboard /></AppShell>
@@ -288,7 +315,7 @@ function AppRoutes() {
         </RequireAuth>
       } />
 
-      {/* ── SHARED STAFF ── */}
+      {/* ── SHARED STAFF ──────────────────────────────────────── */}
       <Route path="/dashboard" element={
         <RequireAuth roles={STAFF_ROLES}>
           <AppShell><Dashboard /></AppShell>
@@ -305,7 +332,7 @@ function AppRoutes() {
         </RequireAuth>
       } />
 
-      {/* ── TUJIJENGE ── */}
+      {/* ── TUJIJENGE ─────────────────────────────────────────── */}
       <Route path="/tujijenge/members" element={
         <RequireAuth roles={FINANCE_ROLES}>
           <AppShell><TujijengeMembers /></AppShell>
@@ -337,7 +364,7 @@ function AppRoutes() {
         </RequireAuth>
       } />
 
-      {/* ── WEALTH ALLIANCE ── */}
+      {/* ── WEALTH ALLIANCE ───────────────────────────────────── */}
       <Route path="/wealth-alliance/investors" element={
         <RequireAuth roles={FINANCE_ROLES}>
           <AppShell><Investors /></AppShell>
@@ -364,7 +391,7 @@ function AppRoutes() {
         </RequireAuth>
       } />
 
-      {/* ── TABLE BANKING ── */}
+      {/* ── TABLE BANKING ─────────────────────────────────────── */}
       <Route path="/table-banking/members" element={
         <RequireAuth roles={FINANCE_ROLES}>
           <AppShell><TBMembers /></AppShell>
@@ -386,7 +413,7 @@ function AppRoutes() {
         </RequireAuth>
       } />
 
-      {/* ── RENTALS ── */}
+      {/* ── RENTALS ───────────────────────────────────────────── */}
       <Route path="/rentals/properties" element={
         <RequireAuth roles={FINANCE_ROLES}>
           <AppShell><Properties /></AppShell>
@@ -418,7 +445,7 @@ function AppRoutes() {
         </RequireAuth>
       } />
 
-      {/* ── MPESA ── */}
+      {/* ── MPESA ─────────────────────────────────────────────── */}
       <Route path="/mpesa/queue" element={
         <RequireAuth roles={FINANCE_ROLES}>
           <AppShell><MpesaQueue /></AppShell>
@@ -435,21 +462,21 @@ function AppRoutes() {
         </RequireAuth>
       } />
 
-      {/* ── APPROVALS ── */}
+      {/* ── APPROVALS ─────────────────────────────────────────── */}
       <Route path="/approvals" element={
         <RequireAuth roles={FINANCE_ROLES}>
           <AppShell><Approvals /></AppShell>
         </RequireAuth>
       } />
 
-      {/* ── REPORTS ── */}
+      {/* ── REPORTS ───────────────────────────────────────────── */}
       <Route path="/reports" element={
         <RequireAuth roles={[...FINANCE_ROLES, ROLES.AUDITOR]}>
           <AppShell><Reports /></AppShell>
         </RequireAuth>
       } />
 
-      {/* ── MEMBER / INVESTOR / TENANT PORTAL ── */}
+      {/* ── MEMBER / INVESTOR / TENANT PORTAL ─────────────────── */}
       <Route path="/my-dashboard" element={
         <RequireAuth roles={[ROLES.MEMBER, ROLES.INVESTOR, ROLES.TENANT]}>
           <AppShell><MyDashboard /></AppShell>
@@ -491,7 +518,7 @@ function AppRoutes() {
         </RequireAuth>
       } />
 
-      {/* ── 403 / 404 ── */}
+      {/* ── 403 / 404 ─────────────────────────────────────────── */}
       <Route path="/403" element={
         <div className="error-page">
           <div className="error-page__icon">
@@ -499,10 +526,11 @@ function AppRoutes() {
           </div>
           <h1>Access Denied</h1>
           <p>You don't have permission to view this page.</p>
-          <a href="/" className="btn btn--primary">Go to Dashboard</a>
+          <a href="/" className="btn btn--primary">Back to Home</a>
         </div>
       } />
       <Route path="*" element={<NotFound />} />
+
     </Routes>
   )
 }
