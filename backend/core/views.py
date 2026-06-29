@@ -548,7 +548,23 @@ class LoanListCreateView(generics.ListCreateAPIView):
         return qs
 
     def perform_create(self, serializer):
-        loan = serializer.save(created_by=self.request.user, status=LoanStatus.PENDING)
+        import uuid
+        member = serializer.validated_data.get('member')
+        if not member:
+            from rest_framework import serializers
+            raise serializers.ValidationError("Member is required")
+        
+        # Auto-generate loan number
+        loan_number = f"LN-{uuid.uuid4().hex[:8].upper()}"
+        
+        # Save the loan with branch from member, pending status, and generated loan number
+        loan = serializer.save(
+            created_by=self.request.user,
+            status=LoanStatus.PENDING,
+            branch=member.branch,
+            loan_number=loan_number
+        )
+        
         # Auto-create approval request
         ApprovalRequest.objects.create(
             branch=loan.branch,
@@ -562,8 +578,8 @@ class LoanListCreateView(generics.ListCreateAPIView):
         log_audit(user=self.request.user, action='CREATE_LOAN',
                   model_name='Loan', object_id=str(loan.id),
                   new_value={'loan_number': loan.loan_number, 'principal': str(loan.principal)})
-
-
+        
+        
 class LoanDetailView(generics.RetrieveUpdateAPIView):
     permission_classes = [IsAuthenticated, IsFinanceOfficerOrAbove]
     queryset = Loan.objects.select_related('member', 'product', 'approved_by')

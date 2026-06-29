@@ -298,9 +298,21 @@ class LoanDetailSerializer(serializers.ModelSerializer):
 
 
 class LoanCreateSerializer(serializers.ModelSerializer):
+    """
+    `branch` is intentionally NOT included here. It used to be a required
+    field, which meant the frontend had to know and send a branch ID for
+    every loan — easy to forget (this is what caused the
+    {"branch": ["This field is required."]} 400). It's also a minor trust
+    issue to let the client choose which branch a loan is filed under.
+
+    Instead, branch is derived server-side in
+    LoanListCreateView.perform_create() from member.branch, since every
+    Member has a required, non-nullable branch FK. The frontend now only
+    ever needs to send: member, product, principal, notes.
+    """
     class Meta:
         model = Loan
-        fields = ['branch', 'member', 'product', 'principal', 'notes']
+        fields = ['member', 'product', 'principal', 'notes']
 
     def validate(self, data):
         member = data['member']
@@ -316,14 +328,6 @@ class LoanCreateSerializer(serializers.ModelSerializer):
                 "Member has an active loan. Cannot create a new one."
             )
         return data
-
-    def create(self, validated_data):
-        import uuid
-        loan = Loan(**validated_data)
-        loan.loan_number = f"LN-{uuid.uuid4().hex[:8].upper()}"
-        loan.calculate()
-        loan.save()
-        return loan
 
 
 class LoanApproveSerializer(serializers.Serializer):
