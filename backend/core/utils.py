@@ -11,6 +11,23 @@ import re
 # ─────────────────────────────────────────────
 
 def send_otp_email(user, token):
+    """
+    Sends the OTP email via whatever EMAIL_BACKEND is configured in settings.
+
+    NOTE: fail_silently is now False on purpose. With the default
+    `console.EmailBackend`, the OTP only ever prints to the runserver
+    terminal — it never reaches a real inbox. To actually deliver email,
+    set EMAIL_BACKEND to 'django.core.mail.backends.smtp.EmailBackend'
+    (or a provider backend like SendGrid/Mailgun/Brevo) in settings.py,
+    along with EMAIL_HOST, EMAIL_PORT, EMAIL_HOST_USER, EMAIL_HOST_PASSWORD,
+    EMAIL_USE_TLS, and DEFAULT_FROM_EMAIL.
+
+    Raising on failure (instead of fail_silently=True) means the calling
+    view's request-OTP endpoint will surface a real error to the frontend
+    instead of returning a false "OTP sent" success when delivery fails.
+    Make sure the view that calls this wraps it in try/except and returns
+    a proper error response — see request_otp view.
+    """
     subject = 'Your Kilele Ridge Login OTP'
     message = (
         f'Hello {user.full_name},\n\n'
@@ -24,7 +41,7 @@ def send_otp_email(user, token):
         message=message,
         from_email=settings.DEFAULT_FROM_EMAIL,
         recipient_list=[user.email],
-        fail_silently=True,
+        fail_silently=False,
     )
 
 

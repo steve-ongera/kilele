@@ -9,7 +9,14 @@ export default function Login() {
   const { login, user } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
-  const from = location.state?.from?.pathname || '/'
+
+  // Where to send the user after a successful login.
+  // - If they were bounced here from a protected route, RequireAuth set
+  //   state.from, so honor that and send them back to where they were going.
+  // - Otherwise (e.g. they came straight from the landing page or typed
+  //   /login directly), send them to /app, which RedirectByRole resolves
+  //   to the correct dashboard based on user.role.
+  const destination = location.state?.from?.pathname || '/app'
 
   const [step, setStep]       = useState(STEP.EMAIL)
   const [email, setEmail]     = useState('')
@@ -22,7 +29,7 @@ export default function Login() {
 
   // Already logged in
   useEffect(() => {
-    if (user) navigate(from, { replace: true })
+    if (user) navigate(destination, { replace: true })
   }, [user])
 
   // Resend countdown
@@ -89,7 +96,7 @@ export default function Login() {
     try {
       const res = await authAPI.verifyOTP(email, token)
       login(res.data.user, res.data.access, res.data.refresh)
-      navigate(from, { replace: true })
+      navigate(destination, { replace: true })
     } catch (err) {
       setError(err.response?.data?.detail || 'Invalid or expired code. Please try again.')
       setOtp(['', '', '', '', '', ''])
