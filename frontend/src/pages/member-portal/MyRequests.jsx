@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useAuth } from '../../App'
-import { loansAPI, investorWithdrawalsAPI, maintenanceAPI, toArray } from '../../services/api'
+import { loansAPI, investorWithdrawalsAPI, maintenanceAPI, unitsAPI, toArray } from '../../services/api'
 
 export default function MyRequests() {
   const { user } = useAuth()
@@ -13,16 +13,19 @@ export default function MyRequests() {
   const [error, setError] = useState('')
   const [loanProducts, setLoanProducts] = useState([])
   const [hasMemberProfile, setHasMemberProfile] = useState(false)
+  const [availableUnits, setAvailableUnits] = useState([])
 
   const [loanForm, setLoanForm] = useState({ product: '', principal: '', notes: '' })
   const [withdrawalForm, setWithdrawalForm] = useState({ withdrawal_type: 'DIVIDEND', amount_requested: '', notes: '' })
-  const [maintenanceForm, setMaintenanceForm] = useState({ title: '', description: '' })
+  const [maintenanceForm, setMaintenanceForm] = useState({ unit: '', title: '', description: '' })
 
   useEffect(() => { 
     console.log('=== MyRequests Component Mounted ===')
     console.log('User object:', user)
     console.log('User role:', role)
     console.log('User member_id:', user?.member_id)
+    console.log('User tenant_id:', user?.tenant_id)
+    console.log('User unit_id:', user?.unit_id)
     
     // Check if user has required profiles
     if (role === 'MEMBER' && !user?.member_id) {
@@ -33,10 +36,28 @@ export default function MyRequests() {
     }
     
     fetchRequests()
+    
     if (role === 'MEMBER' && user?.member_id) {
       fetchLoanProducts()
     }
+    
+    if (role === 'TENANT' && user?.tenant_id) {
+      fetchTenantUnits()
+    }
   }, [user])
+
+  const fetchTenantUnits = async () => {
+    try {
+      console.log('=== Fetching Tenant Units ===')
+      // Get units for the tenant's branch or all units
+      const res = await unitsAPI.list({})
+      const units = toArray(res.data)
+      console.log('Available units:', units)
+      setAvailableUnits(units)
+    } catch (error) {
+      console.error('Error fetching units:', error)
+    }
+  }
 
   const fetchLoanProducts = async () => {
     if (!user?.member_id) {
@@ -126,8 +147,6 @@ export default function MyRequests() {
         }
         
         console.log('=== Submitting Loan Request ===')
-        console.log('User:', user)
-        console.log('Member ID:', user.member_id)
         console.log('Loan Data being sent:', JSON.stringify(loanData, null, 2))
         
         const response = await loansAPI.create(loanData)
@@ -159,15 +178,23 @@ export default function MyRequests() {
         if (!user?.tenant_id) {
           throw new Error('No tenant profile found. Please contact an administrator.')
         }
-        if (!maintenanceForm.title) {
+        
+        // Validate maintenance form
+        if (!maintenanceForm.unit) {
+          throw new Error('Please select a unit for the maintenance request.')
+        }
+        if (!maintenanceForm.title || !maintenanceForm.title.trim()) {
           throw new Error('Please enter a title for the maintenance request.')
+        }
+        if (!maintenanceForm.description || !maintenanceForm.description.trim()) {
+          throw new Error('Please enter a description for the maintenance request.')
         }
         
         const maintenanceData = { 
-          unit: user?.unit_id, 
-          tenant: user.tenant_id, 
-          title: maintenanceForm.title,
-          description: maintenanceForm.description || ''
+          unit: maintenanceForm.unit,
+          tenant: user.tenant_id,
+          title: maintenanceForm.title.trim(),
+          description: maintenanceForm.description.trim()
         }
         
         console.log('=== Submitting Maintenance Request ===')
@@ -180,7 +207,7 @@ export default function MyRequests() {
       // Reset forms
       setLoanForm({ product: '', principal: '', notes: '' })
       setWithdrawalForm({ withdrawal_type: 'DIVIDEND', amount_requested: '', notes: '' })
-      setMaintenanceForm({ title: '', description: '' })
+      setMaintenanceForm({ unit: '', title: '', description: '' })
       await fetchRequests()
       
     } catch (err) {
@@ -260,6 +287,13 @@ export default function MyRequests() {
         </div>
       )}
 
+      {role === 'TENANT' && !user?.unit_id && (
+        <div className="alert alert--warning" style={{ marginBottom: '1.5rem' }}>
+          <i className="bi bi-exclamation-triangle" />
+          You don't have a unit assigned yet. Please contact your property manager to assign you a unit before submitting maintenance requests.
+        </div>
+      )}
+
       <div className="card">
         <div className="table-wrap">
           <table>
@@ -297,13 +331,13 @@ export default function MyRequests() {
 
       {modalOpen && (
         <div className="modal-backdrop" onClick={() => setModalOpen(false)}>
-          <div className="modal" onClick={e => e.stopPropagation()}>
+          <div className="modal" style={{ maxWidth: '600px', width: '100%' }} onClick={e => e.stopPropagation()}>
             <div className="modal__header">
               <h3 className="modal__title">New {titleMap[role]}</h3>
               <button className="modal__close" onClick={() => setModalOpen(false)}><i className="bi bi-x" /></button>
             </div>
             <form onSubmit={handleSubmit}>
-              <div className="modal__body">
+              <div className="modal__body" style={{ maxHeight: '70vh', overflowY: 'auto' }}>
                 {error && (
                   <div className="alert alert--danger">
                     <i className="bi bi-exclamation-circle" />
@@ -428,6 +462,30 @@ export default function MyRequests() {
                       </div>
                     )}
                     <div className="form-group">
+                      <label className="form-label form-label--required">Unit</label>
+                      <select 
+                        className="form-control" 
+                        value={maintenanceForm.unit} 
+                        onChange={e => setMaintenanceForm({ ...maintenanceForm, unit: e.target.value })} 
+                        required
+                        disabled={!user?.tenant_id}
+                      >
+                        <option value="">Select a unit...</option>
+                        {availableUnits.map(u => (
+                          <option key={u.id} value={u.id}>
+                            {u.property_name} — {u.unit_number} 
+                            {u.id === user?.unit_id ? ' (Your Unit)' : ''}
+                          </option>
+                        ))}
+                      </select>
+                      {user?.unit_id && (
+                        <small className="form-help" style={{ color: 'var(--color-text-muted)' }}>
+                          <i className="bi bi-info-circle" /> 
+                          Your assigned unit: {availableUnits.find(u => u.id === user.unit_id)?.property_name} — {availableUnits.find(u => u.id === user.unit_id)?.unit_number}
+                        </small>
+                      )}
+                    </div>
+                    <div className="form-group">
                       <label className="form-label form-label--required">Issue Title</label>
                       <input 
                         className="form-control" 
@@ -439,13 +497,15 @@ export default function MyRequests() {
                       />
                     </div>
                     <div className="form-group">
-                      <label className="form-label">Description</label>
+                      <label className="form-label form-label--required">Description</label>
                       <textarea 
                         className="form-control" 
-                        rows="3"
+                        rows="4"
                         placeholder="Describe the issue in detail"
                         value={maintenanceForm.description} 
                         onChange={e => setMaintenanceForm({ ...maintenanceForm, description: e.target.value })} 
+                        required
+                        disabled={!user?.tenant_id}
                       />
                     </div>
                   </>
