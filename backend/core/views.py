@@ -286,8 +286,31 @@ class DashboardView(views.APIView):
 # ─────────────────────────────────────────────
 
 class UserListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated, IsSuperAdmin]
-    queryset = User.objects.all().order_by('-date_joined')
+    permission_classes = [IsAuthenticated]  # Remove IsSuperAdmin
+    serializer_class = UserCreateSerializer
+
+    def get_permissions(self):
+        # For POST (create), check role-based permissions
+        if self.request.method == 'POST':
+            user = self.request.user
+            # Super Admins can create any user
+            if user.role == UserRole.SUPER_ADMIN:
+                return [IsAuthenticated()]
+            # Branch Admins can only create MEMBERS
+            if user.role == UserRole.BRANCH_ADMIN:
+                # Check if the user being created is a MEMBER
+                role = self.request.data.get('role', 'MEMBER')
+                if role != UserRole.MEMBER:
+                    from rest_framework.permissions import BasePermission
+                    class DenyCreateNonMember(BasePermission):
+                        def has_permission(self, request, view):
+                            return False
+                    return [IsAuthenticated(), DenyCreateNonMember()]
+                return [IsAuthenticated()]
+            # Finance Officers cannot create users
+            return [IsAuthenticated(), IsSuperAdmin()]
+        # GET (list) requires Super Admin
+        return [IsAuthenticated(), IsSuperAdmin()]
 
     def get_serializer_class(self):
         return UserCreateSerializer if self.request.method == 'POST' else UserSerializer
@@ -302,6 +325,17 @@ class UserListCreateView(generics.ListCreateAPIView):
             qs = qs.filter(branch__id=branch)
         return qs
 
+    def perform_create(self, serializer):
+        # Ensure Branch Admins can only create MEMBERS
+        user = self.request.user
+        if user.role == UserRole.BRANCH_ADMIN:
+            # Force role to MEMBER
+            serializer.save(role=UserRole.MEMBER, branch=user.branch)
+        else:
+            serializer.save()
+        log_audit(user=self.request.user, action='CREATE_USER',
+                  model_name='User', object_id=str(serializer.instance.id),
+                  new_value={'email': serializer.instance.email, 'role': serializer.instance.role})
 
 class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated, IsSuperAdmin]

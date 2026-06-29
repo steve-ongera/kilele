@@ -61,15 +61,26 @@ class UserSerializer(serializers.ModelSerializer):
 
 
 class UserCreateSerializer(serializers.ModelSerializer):
+    password = serializers.CharField(write_only=True, required=False, allow_blank=True)
+
     class Meta:
         model = User
-        fields = ['email', 'full_name', 'phone', 'role', 'branch']
+        fields = ['email', 'full_name', 'phone', 'role', 'branch', 'password']
 
     def create(self, validated_data):
+        password = validated_data.pop('password', None)
         user = User(**validated_data)
-        user.set_unusable_password()
+        if password:
+            user.set_password(password)  # This hashes the password
+        else:
+            user.set_unusable_password()
         user.save()
         return user
+
+    def validate_email(self, value):
+        if User.objects.filter(email=value).exists():
+            raise serializers.ValidationError("A user with this email already exists.")
+        return value
 
 
 class UserProfileSerializer(serializers.ModelSerializer):
@@ -180,7 +191,6 @@ class MemberCreateSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         import uuid
-        # Auto-generate member number
         validated_data['member_number'] = f"TJ-{uuid.uuid4().hex[:6].upper()}"
         return super().create(validated_data)
 

@@ -1,9 +1,21 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { membersAPI, branchesAPI, toArray } from '../../services/api'
+import { membersAPI, branchesAPI, usersAPI, toArray } from '../../services/api'
 
 const STATUS_OPTIONS = ['ACTIVE', 'INACTIVE', 'SUSPENDED', 'EXITED', 'DECEASED']
-const EMPTY_FORM = { branch: '', full_name: '', phone: '', email: '', id_number: '', date_joined: '', shares: 1 }
+const EMPTY_FORM = { 
+  branch: '', 
+  full_name: '', 
+  phone: '', 
+  email: '', 
+  id_number: '', 
+  date_joined: '', 
+  shares: 1,
+  // User account fields
+  create_user: true,  // Auto-create user by default
+  password: '',
+  confirm_password: ''
+}
 
 const fmt = (n) => Number(n || 0).toLocaleString('en-KE', { maximumFractionDigits: 0 })
 const fmtKES = (n) => `KES ${fmt(n)}`
@@ -21,6 +33,7 @@ export default function TujijengeMembers() {
   const [form, setForm] = useState(EMPTY_FORM)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
 
   useEffect(() => { fetchBranches() }, [])
   useEffect(() => { fetchMembers() }, [search, statusFilter, page])
@@ -47,7 +60,12 @@ export default function TujijengeMembers() {
   }
 
   const openCreate = () => {
-    setForm({ ...EMPTY_FORM, branch: branches[0]?.id || '', date_joined: new Date().toISOString().slice(0, 10) })
+    setForm({ 
+      ...EMPTY_FORM, 
+      branch: branches[0]?.id || '', 
+      date_joined: new Date().toISOString().slice(0, 10),
+      create_user: true
+    })
     setError('')
     setModalOpen(true)
   }
@@ -55,16 +73,129 @@ export default function TujijengeMembers() {
   const handleSubmit = async (e) => {
     e.preventDefault()
     setError('')
+    
+    // Validate required fields
     if (!form.full_name.trim() || !form.phone.trim() || !form.branch) {
       return setError('Branch, full name and phone are required.')
     }
+
+    // Validate email if provided
+    if (form.email && !form.email.includes('@')) {
+      return setError('Please enter a valid email address.')
+    }
+
+    // Validate password if creating user
+    if (form.create_user) {
+      if (!form.password || form.password.length < 6) {
+        return setError('Password must be at least 6 characters long.')
+      }
+      if (form.password !== form.confirm_password) {
+        return setError('Passwords do not match.')
+      }
+      
+      // Check if email is provided for user creation
+      if (!form.email) {
+        return setError('Email is required to create a user account.')
+      }
+    }
+
     setSaving(true)
+    
     try {
-      await membersAPI.create(form)
+      // Step 1: Create the member
+      console.log('=== Creating Member ===')
+      const memberData = {
+        branch: form.branch,
+        full_name: form.full_name,
+        phone: form.phone,
+        email: form.email || '',
+        id_number: form.id_number || '',
+        date_joined: form.date_joined,
+        shares: parseInt(form.shares) || 1
+      }
+      
+      console.log('Member data:', memberData)
+      const memberResponse = await membersAPI.create(memberData)
+      console.log('Member created:', memberResponse.data)
+      
+      // Step 2: If create_user is checked, create a user account
+      if (form.create_user && form.email) {
+        console.log('=== Creating User Account ===')
+        
+        // Get the member ID from the response
+        const memberId = memberResponse.data.id
+        
+        // Create user with MEMBER role
+        const userData = {
+          email: form.email,
+          full_name: form.full_name,
+          phone: form.phone,
+          role: 'MEMBER',
+          branch: form.branch,
+          password: form.password // This will be handled by the backend
+        }
+        
+        console.log('User data:', userData)
+        
+        // Note: You'll need to update your UserCreateSerializer to accept password
+        // and hash it properly. For now, we'll use a default password
+        // The backend should hash the password before saving
+        
+        try {
+          const userResponse = await usersAPI.create(userData)
+          console.log('User created:', userResponse.data)
+          
+          // Step 3: Associate user with member
+          // You may need to add a PATCH endpoint to update the member's user field
+          // For now, we'll update the member with the user ID
+          const userId = userResponse.data.id
+          await membersAPI.update(memberId, { user: userId })
+          console.log('Member associated with user:', userId)
+          
+        } catch (userError) {
+          console.error('Failed to create user:', userError)
+          // If user creation fails, we should handle it gracefully
+          // The member was already created successfully
+          setError('Member created but user account creation failed. Please create user manually.')
+          setModalOpen(false)
+          fetchMembers()
+          setSaving(false)
+          return
+        }
+      }
+      
       setModalOpen(false)
+      setForm(EMPTY_FORM)
       fetchMembers()
+      setError('')
+      
     } catch (err) {
-      setError(err.response?.data?.detail || 'Failed to create member.')
+      console.error('Error creating member:', err)
+      console.error('Error response:', err.response?.data)
+      
+      let errorMessage = 'Failed to create member.'
+      
+      if (err.response?.data) {
+        if (typeof err.response.data === 'object') {
+          const errors = []
+          for (const [key, value] of Object.entries(err.response.data)) {
+            if (Array.isArray(value)) {
+              errors.push(`${key}: ${value.join(', ')}`)
+            } else if (typeof value === 'string') {
+              errors.push(`${key}: ${value}`)
+            }
+          }
+          if (errors.length > 0) {
+            errorMessage = errors.join('; ')
+          } else {
+            errorMessage = err.response.data.detail || JSON.stringify(err.response.data)
+          }
+        } else {
+          errorMessage = err.response.data || errorMessage
+        }
+      }
+      
+      setError(errorMessage)
     } finally {
       setSaving(false)
     }
@@ -172,6 +303,7 @@ export default function TujijengeMembers() {
             <form onSubmit={handleSubmit}>
               <div className="modal__body">
                 {error && <div className="alert alert--danger"><i className="bi bi-exclamation-circle" />{error}</div>}
+
                 <div className="form-group">
                   <label className="form-label form-label--required">Branch</label>
                   <select className="form-control" value={form.branch} onChange={e => setForm({ ...form, branch: e.target.value })} required>
@@ -179,20 +311,23 @@ export default function TujijengeMembers() {
                     {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
                   </select>
                 </div>
+
                 <div className="form-group">
                   <label className="form-label form-label--required">Full Name</label>
                   <input className="form-control" value={form.full_name} onChange={e => setForm({ ...form, full_name: e.target.value })} required />
                 </div>
+
                 <div className="form-row">
                   <div className="form-group">
                     <label className="form-label form-label--required">Phone</label>
                     <input className="form-control" placeholder="07XXXXXXXX" value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })} required />
                   </div>
                   <div className="form-group">
-                    <label className="form-label">Email</label>
-                    <input type="email" className="form-control" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} />
+                    <label className="form-label form-label--required">Email</label>
+                    <input type="email" className="form-control" placeholder="member@example.com" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} required={form.create_user} />
                   </div>
                 </div>
+
                 <div className="form-row">
                   <div className="form-group">
                     <label className="form-label">ID Number</label>
@@ -203,10 +338,80 @@ export default function TujijengeMembers() {
                     <input type="number" min="1" className="form-control" value={form.shares} onChange={e => setForm({ ...form, shares: e.target.value })} />
                   </div>
                 </div>
+
                 <div className="form-group">
                   <label className="form-label form-label--required">Date Joined</label>
                   <input type="date" className="form-control" value={form.date_joined} onChange={e => setForm({ ...form, date_joined: e.target.value })} required />
                 </div>
+
+                <hr style={{ margin: '1.5rem 0' }} />
+
+                <div className="form-group">
+                  <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+                    <input 
+                      type="checkbox" 
+                      checked={form.create_user} 
+                      onChange={e => setForm({ ...form, create_user: e.target.checked })} 
+                    />
+                    <span>Create user account automatically</span>
+                  </label>
+                  <small className="form-help" style={{ color: 'var(--color-text-muted)' }}>
+                    <i className="bi bi-info-circle" /> 
+                    {form.create_user ? 'A user account will be created with MEMBER role.' : 'No user account will be created.'}
+                  </small>
+                </div>
+
+                {form.create_user && (
+                  <>
+                    <div className="form-row">
+                      <div className="form-group">
+                        <label className="form-label form-label--required">Password</label>
+                        <div style={{ position: 'relative' }}>
+                          <input 
+                            type={showPassword ? 'text' : 'password'} 
+                            className="form-control" 
+                            placeholder="Min 6 characters"
+                            value={form.password} 
+                            onChange={e => setForm({ ...form, password: e.target.value })} 
+                            required={form.create_user}
+                            minLength="6"
+                          />
+                          <button 
+                            type="button"
+                            style={{ 
+                              position: 'absolute', 
+                              right: '8px', 
+                              top: '50%', 
+                              transform: 'translateY(-50%)',
+                              background: 'none',
+                              border: 'none',
+                              cursor: 'pointer',
+                              color: 'var(--color-text-muted)'
+                            }}
+                            onClick={() => setShowPassword(!showPassword)}
+                          >
+                            <i className={`bi bi-eye${showPassword ? '' : '-slash'}`} />
+                          </button>
+                        </div>
+                      </div>
+                      <div className="form-group">
+                        <label className="form-label form-label--required">Confirm Password</label>
+                        <input 
+                          type="password" 
+                          className="form-control" 
+                          placeholder="Confirm password"
+                          value={form.confirm_password} 
+                          onChange={e => setForm({ ...form, confirm_password: e.target.value })} 
+                          required={form.create_user}
+                        />
+                      </div>
+                    </div>
+                    <small className="form-help" style={{ color: 'var(--color-text-muted)' }}>
+                      <i className="bi bi-shield-check" /> 
+                      The user will be able to log in with their email and this password.
+                    </small>
+                  </>
+                )}
               </div>
               <div className="modal__footer">
                 <button type="button" className="btn btn--secondary" onClick={() => setModalOpen(false)}>Cancel</button>
