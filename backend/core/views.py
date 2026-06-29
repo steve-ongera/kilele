@@ -516,20 +516,54 @@ class ContributionDetailView(generics.RetrieveUpdateAPIView):
 # LOANS
 # ─────────────────────────────────────────────
 
+# LOANS - Updated to allow MEMBERS to view products
+import logging
+logger = logging.getLogger(__name__)
+
 class LoanProductListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated, IsBranchAdminOrAbove]
+    permission_classes = [IsAuthenticated]
     serializer_class = LoanProductSerializer
+
+    def get_permissions(self):
+        if self.request.method == 'POST':
+            return [IsAuthenticated(), IsBranchAdminOrAbove()]
+        return [IsAuthenticated()]
 
     def get_queryset(self):
         user = self.request.user
+        logger.info(f"=== Loan Products Request ===")
+        logger.info(f"User: {user.email}, Role: {user.role}, Branch: {user.branch}")
+        
         qs = LoanProduct.objects.filter(is_active=True)
-        if user.role != UserRole.SUPER_ADMIN and user.branch:
+        
+        # MEMBERS can only see products from their branch
+        if user.role == UserRole.MEMBER:
+            try:
+                member = user.member
+                logger.info(f"Member found: {member.member_number}, Branch: {member.branch}")
+                if member.branch:
+                    qs = qs.filter(branch=member.branch)
+                    logger.info(f"Filtering products for branch: {member.branch.name}")
+                else:
+                    logger.warning(f"Member {member.member_number} has no branch assigned!")
+                    return qs.none()
+            except Exception as e:
+                logger.error(f"Error getting member: {e}")
+                return qs.none()
+        # Other non-super admins see only their branch products
+        elif user.role != UserRole.SUPER_ADMIN and user.branch:
             qs = qs.filter(branch=user.branch)
+            logger.info(f"Filtering products for user branch: {user.branch.name}")
+        
+        logger.info(f"Found {qs.count()} loan products")
+        for product in qs:
+            logger.info(f"  Product: {product.name}, Branch: {product.branch.name if product.branch else 'No Branch'}")
+        
         return qs
 
 
 class LoanListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated, IsFinanceOfficerOrAbove]
+    permission_classes = [IsAuthenticated]  # Allow any authenticated user
 
     def get_serializer_class(self):
         return LoanCreateSerializer if self.request.method == 'POST' else LoanListSerializer
@@ -537,8 +571,16 @@ class LoanListCreateView(generics.ListCreateAPIView):
     def get_queryset(self):
         user = self.request.user
         qs = Loan.objects.select_related('member', 'product').order_by('-created_at')
-        if user.role != UserRole.SUPER_ADMIN and user.branch:
+        
+        if user.role == UserRole.MEMBER:
+            try:
+                member = user.member
+                qs = qs.filter(member=member)
+            except:
+                return qs.none()
+        elif user.role != UserRole.SUPER_ADMIN and user.branch:
             qs = qs.filter(branch=user.branch)
+            
         status_f = self.request.query_params.get('status')
         member_id = self.request.query_params.get('member')
         if status_f:
@@ -549,21 +591,40 @@ class LoanListCreateView(generics.ListCreateAPIView):
 
     def perform_create(self, serializer):
         import uuid
+        user = self.request.user
+        print(f"=== Creating Loan ===")
+        print(f"User: {user.email}, Role: {user.role}")
+        print(f"Validated data: {serializer.validated_data}")
+        
+        # Determine member - either from request data or from the authenticated user
         member = serializer.validated_data.get('member')
-        if not member:
+        
+        # If user is a MEMBER, use their own member record
+        if user.role == UserRole.MEMBER:
+            try:
+                member = user.member
+                print(f"Using member from user: {member.member_number}")
+            except Exception as e:
+                print(f"Error getting member: {e}")
+                from rest_framework import serializers
+                raise serializers.ValidationError("No member profile found for this user.")
+        elif not member:
             from rest_framework import serializers
             raise serializers.ValidationError("Member is required")
-        
+            
         # Auto-generate loan number
         loan_number = f"LN-{uuid.uuid4().hex[:8].upper()}"
+        print(f"Generated loan number: {loan_number}")
         
-        # Save the loan with branch from member, pending status, and generated loan number
+        # Save the loan
         loan = serializer.save(
-            created_by=self.request.user,
+            created_by=user,
             status=LoanStatus.PENDING,
             branch=member.branch,
-            loan_number=loan_number
+            loan_number=loan_number,
+            member=member
         )
+        print(f"Loan created: {loan.loan_number}")
         
         # Auto-create approval request
         ApprovalRequest.objects.create(
@@ -571,14 +632,13 @@ class LoanListCreateView(generics.ListCreateAPIView):
             action_type='LOAN',
             reference_id=loan.id,
             reference_model='Loan',
-            requested_by=self.request.user,
+            requested_by=user,
             reason=f'Loan application {loan.loan_number} for {loan.member.full_name}',
             payload={'loan_number': loan.loan_number, 'principal': str(loan.principal)},
         )
-        log_audit(user=self.request.user, action='CREATE_LOAN',
+        log_audit(user=user, action='CREATE_LOAN',
                   model_name='Loan', object_id=str(loan.id),
                   new_value={'loan_number': loan.loan_number, 'principal': str(loan.principal)})
-        
         
 class LoanDetailView(generics.RetrieveUpdateAPIView):
     permission_classes = [IsAuthenticated, IsFinanceOfficerOrAbove]

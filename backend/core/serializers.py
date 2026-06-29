@@ -28,14 +28,36 @@ class VerifyOTPSerializer(serializers.Serializer):
 
 class UserSerializer(serializers.ModelSerializer):
     branch_name = serializers.CharField(source='branch.name', read_only=True)
+    member_id = serializers.SerializerMethodField()
+    investor_id = serializers.SerializerMethodField()
+    tenant_id = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = [
             'id', 'email', 'full_name', 'phone', 'role',
             'branch', 'branch_name', 'is_active', 'date_joined', 'last_login',
+            'member_id', 'investor_id', 'tenant_id',  # Make sure these are included
         ]
         read_only_fields = ['id', 'date_joined', 'last_login']
+
+    def get_member_id(self, obj):
+        try:
+            return obj.member.id if hasattr(obj, 'member') and obj.member else None
+        except:
+            return None
+
+    def get_investor_id(self, obj):
+        try:
+            return obj.investor.id if hasattr(obj, 'investor') and obj.investor else None
+        except:
+            return None
+
+    def get_tenant_id(self, obj):
+        try:
+            return obj.tenant.id if hasattr(obj, 'tenant') and obj.tenant else None
+        except:
+            return None
 
 
 class UserCreateSerializer(serializers.ModelSerializer):
@@ -298,18 +320,6 @@ class LoanDetailSerializer(serializers.ModelSerializer):
 
 
 class LoanCreateSerializer(serializers.ModelSerializer):
-    """
-    `branch` is intentionally NOT included here. It used to be a required
-    field, which meant the frontend had to know and send a branch ID for
-    every loan — easy to forget (this is what caused the
-    {"branch": ["This field is required."]} 400). It's also a minor trust
-    issue to let the client choose which branch a loan is filed under.
-
-    Instead, branch is derived server-side in
-    LoanListCreateView.perform_create() from member.branch, since every
-    Member has a required, non-nullable branch FK. The frontend now only
-    ever needs to send: member, product, principal, notes.
-    """
     class Meta:
         model = Loan
         fields = ['member', 'product', 'principal', 'notes']
@@ -328,7 +338,6 @@ class LoanCreateSerializer(serializers.ModelSerializer):
                 "Member has an active loan. Cannot create a new one."
             )
         return data
-
 
 class LoanApproveSerializer(serializers.Serializer):
     notes = serializers.CharField(required=False, allow_blank=True)
