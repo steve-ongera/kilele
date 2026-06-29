@@ -157,13 +157,14 @@ class MemberDetailSerializer(serializers.ModelSerializer):
     total_contributions = serializers.SerializerMethodField()
     loan_limit = serializers.SerializerMethodField()
     active_loans = serializers.SerializerMethodField()
+    user_email = serializers.SerializerMethodField()  # Add this
 
     class Meta:
         model = Member
         fields = [
-            'id', 'branch', 'branch_name', 'user', 'member_number',
-            'full_name', 'phone', 'email', 'id_number', 'date_joined',
-            'shares', 'status', 'advance_credit',
+            'id', 'branch', 'branch_name', 'user', 'user_email',  # Add user_email
+            'member_number', 'full_name', 'phone', 'email', 'id_number', 
+            'date_joined', 'shares', 'status', 'advance_credit',
             'total_contributions', 'loan_limit', 'active_loans',
             'created_at', 'updated_at',
         ]
@@ -180,19 +181,87 @@ class MemberDetailSerializer(serializers.ModelSerializer):
             status__in=['PERFORMING', 'DISBURSED', 'WATCHLIST', 'OVERDUE']
         ).count()
 
+    def get_user_email(self, obj):
+        """Return the user's email if associated, else None"""
+        return obj.user.email if obj.user else None
+
 
 class MemberCreateSerializer(serializers.ModelSerializer):
+    password = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    create_user = serializers.BooleanField(write_only=True, required=False, default=True)
+
     class Meta:
         model = Member
         fields = [
             'branch', 'user', 'full_name', 'phone', 'email',
-            'id_number', 'date_joined', 'shares',
+            'id_number', 'date_joined', 'shares', 'password', 'create_user',
         ]
+        extra_kwargs = {
+            'user': {'required': False, 'allow_null': True},
+            'email': {'required': False, 'allow_blank': True},
+        }
+
+    def validate(self, data):
+        # If create_user is True, email and password are required
+        if data.get('create_user', True):
+            if not data.get('email'):
+                raise serializers.ValidationError({"email": "Email is required to create a user account."})
+            if not data.get('password'):
+                raise serializers.ValidationError({"password": "Password is required to create a user account."})
+            if User.objects.filter(email=data['email']).exists():
+                raise serializers.ValidationError({"email": "A user with this email already exists."})
+        return data
 
     def create(self, validated_data):
         import uuid
+        from django.contrib.auth.hashers import make_password
+        
+        # Extract user-related fields
+        password = validated_data.pop('password', None)
+        create_user = validated_data.pop('create_user', True)
+        email = validated_data.get('email', '')
+        
+        # Generate member number
         validated_data['member_number'] = f"TJ-{uuid.uuid4().hex[:6].upper()}"
-        return super().create(validated_data)
+        
+        # Remove user field if present (we'll set it after creating the user)
+        validated_data.pop('user', None)
+        
+        # Create member
+        member = super().create(validated_data)
+        
+        # Create user account if requested
+        if create_user and email and password:
+            from .models import User, UserRole
+            
+            # Check if user already exists (just in case)
+            existing_user = User.objects.filter(email=email).first()
+            if existing_user:
+                # If user exists, associate it with the member
+                member.user = existing_user
+                member.save(update_fields=['user'])
+                return member
+            
+            # Create the user
+            user = User.objects.create(
+                email=email,
+                full_name=validated_data.get('full_name', ''),
+                phone=validated_data.get('phone', ''),
+                role=UserRole.MEMBER,
+                branch=validated_data.get('branch'),
+                is_active=True,
+                is_staff=False,
+            )
+            user.set_password(password)  # Hash the password
+            user.save()
+            
+            # Associate user with member
+            member.user = user
+            member.save(update_fields=['user'])
+            
+            print(f"✅ User '{email}' created and associated with member '{member.member_number}'")
+            
+        return member
 
 
 class MemberStatementSerializer(serializers.Serializer):

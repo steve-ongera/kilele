@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { membersAPI, branchesAPI, usersAPI, toArray } from '../../services/api'
+import { membersAPI, branchesAPI, toArray } from '../../services/api'
 
 const STATUS_OPTIONS = ['ACTIVE', 'INACTIVE', 'SUSPENDED', 'EXITED', 'DECEASED']
 const EMPTY_FORM = { 
@@ -11,8 +11,7 @@ const EMPTY_FORM = {
   id_number: '', 
   date_joined: '', 
   shares: 1,
-  // User account fields
-  create_user: true,  // Auto-create user by default
+  create_user: true,
   password: '',
   confirm_password: ''
 }
@@ -79,31 +78,21 @@ export default function TujijengeMembers() {
       return setError('Branch, full name and phone are required.')
     }
 
-    // Validate email if provided
-    if (form.email && !form.email.includes('@')) {
-      return setError('Please enter a valid email address.')
-    }
-
-    // Validate password if creating user
     if (form.create_user) {
+      if (!form.email || !form.email.includes('@')) {
+        return setError('Please enter a valid email address.')
+      }
       if (!form.password || form.password.length < 6) {
         return setError('Password must be at least 6 characters long.')
       }
       if (form.password !== form.confirm_password) {
         return setError('Passwords do not match.')
       }
-      
-      // Check if email is provided for user creation
-      if (!form.email) {
-        return setError('Email is required to create a user account.')
-      }
     }
 
     setSaving(true)
     
     try {
-      // Step 1: Create the member
-      console.log('=== Creating Member ===')
       const memberData = {
         branch: form.branch,
         full_name: form.full_name,
@@ -111,70 +100,21 @@ export default function TujijengeMembers() {
         email: form.email || '',
         id_number: form.id_number || '',
         date_joined: form.date_joined,
-        shares: parseInt(form.shares) || 1
+        shares: parseInt(form.shares) || 1,
+        create_user: form.create_user,
+        password: form.create_user ? form.password : '',
       }
       
       console.log('Member data:', memberData)
-      const memberResponse = await membersAPI.create(memberData)
-      console.log('Member created:', memberResponse.data)
-      
-      // Step 2: If create_user is checked, create a user account
-      if (form.create_user && form.email) {
-        console.log('=== Creating User Account ===')
-        
-        // Get the member ID from the response
-        const memberId = memberResponse.data.id
-        
-        // Create user with MEMBER role
-        const userData = {
-          email: form.email,
-          full_name: form.full_name,
-          phone: form.phone,
-          role: 'MEMBER',
-          branch: form.branch,
-          password: form.password // This will be handled by the backend
-        }
-        
-        console.log('User data:', userData)
-        
-        // Note: You'll need to update your UserCreateSerializer to accept password
-        // and hash it properly. For now, we'll use a default password
-        // The backend should hash the password before saving
-        
-        try {
-          const userResponse = await usersAPI.create(userData)
-          console.log('User created:', userResponse.data)
-          
-          // Step 3: Associate user with member
-          // You may need to add a PATCH endpoint to update the member's user field
-          // For now, we'll update the member with the user ID
-          const userId = userResponse.data.id
-          await membersAPI.update(memberId, { user: userId })
-          console.log('Member associated with user:', userId)
-          
-        } catch (userError) {
-          console.error('Failed to create user:', userError)
-          // If user creation fails, we should handle it gracefully
-          // The member was already created successfully
-          setError('Member created but user account creation failed. Please create user manually.')
-          setModalOpen(false)
-          fetchMembers()
-          setSaving(false)
-          return
-        }
-      }
+      await membersAPI.create(memberData)
       
       setModalOpen(false)
       setForm(EMPTY_FORM)
       fetchMembers()
-      setError('')
       
     } catch (err) {
       console.error('Error creating member:', err)
-      console.error('Error response:', err.response?.data)
-      
       let errorMessage = 'Failed to create member.'
-      
       if (err.response?.data) {
         if (typeof err.response.data === 'object') {
           const errors = []
@@ -185,16 +125,11 @@ export default function TujijengeMembers() {
               errors.push(`${key}: ${value}`)
             }
           }
-          if (errors.length > 0) {
-            errorMessage = errors.join('; ')
-          } else {
-            errorMessage = err.response.data.detail || JSON.stringify(err.response.data)
-          }
+          errorMessage = errors.join('; ')
         } else {
           errorMessage = err.response.data || errorMessage
         }
       }
-      
       setError(errorMessage)
     } finally {
       setSaving(false)
@@ -236,19 +171,21 @@ export default function TujijengeMembers() {
                 <th>Member #</th>
                 <th>Name</th>
                 <th>Phone</th>
+                <th>Email</th>
                 <th>Branch</th>
                 <th>Shares</th>
                 <th>Total Contributions</th>
                 <th>Loan Limit</th>
                 <th>Status</th>
+                <th>User</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={9}><div className="loading-state"><span className="spinner" /></div></td></tr>
+                <tr><td colSpan={11}><div className="loading-state"><span className="spinner" /></div></td></tr>
               ) : members.length === 0 ? (
-                <tr><td colSpan={9}>
+                <tr><td colSpan={11}>
                   <div className="table-empty">
                     <i className="bi bi-people" />
                     <p>No members found.</p>
@@ -260,12 +197,24 @@ export default function TujijengeMembers() {
                     <td className="font-semi">{m.member_number}</td>
                     <td>{m.full_name}</td>
                     <td className="text-muted">{m.phone}</td>
+                    <td className="text-muted">{m.email || '-'}</td>
                     <td>{m.branch_name}</td>
                     <td>{m.shares}</td>
                     <td className="kes">{fmtKES(m.total_contributions)}</td>
                     <td className="kes text-muted">{fmtKES(m.loan_limit)}</td>
                     <td>
                       <span className={`badge status--${m.status?.toLowerCase()}`}>{m.status}</span>
+                    </td>
+                    <td>
+                      {m.user ? (
+                        <span className="badge badge--success" style={{ fontSize: '0.7rem' }}>
+                          <i className="bi bi-check-circle" /> Yes
+                        </span>
+                      ) : (
+                        <span className="badge badge--gray" style={{ fontSize: '0.7rem' }}>
+                          <i className="bi bi-x-circle" /> No
+                        </span>
+                      )}
                     </td>
                     <td>
                       <Link to={`/tujijenge/members/${m.id}/statement`} className="btn btn--ghost btn--sm">
@@ -295,128 +244,216 @@ export default function TujijengeMembers() {
 
       {modalOpen && (
         <div className="modal-backdrop" onClick={() => setModalOpen(false)}>
-          <div className="modal" onClick={e => e.stopPropagation()}>
+          <div className="modal" style={{ maxWidth: '600px', width: '100%' }} onClick={e => e.stopPropagation()}>
             <div className="modal__header">
-              <h3 className="modal__title">New Member</h3>
+              <h3 className="modal__title">Create New Member</h3>
               <button className="modal__close" onClick={() => setModalOpen(false)}><i className="bi bi-x" /></button>
             </div>
             <form onSubmit={handleSubmit}>
-              <div className="modal__body">
-                {error && <div className="alert alert--danger"><i className="bi bi-exclamation-circle" />{error}</div>}
-
-                <div className="form-group">
-                  <label className="form-label form-label--required">Branch</label>
-                  <select className="form-control" value={form.branch} onChange={e => setForm({ ...form, branch: e.target.value })} required>
-                    <option value="">Select branch</option>
-                    {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-                  </select>
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label form-label--required">Full Name</label>
-                  <input className="form-control" value={form.full_name} onChange={e => setForm({ ...form, full_name: e.target.value })} required />
-                </div>
-
-                <div className="form-row">
-                  <div className="form-group">
-                    <label className="form-label form-label--required">Phone</label>
-                    <input className="form-control" placeholder="07XXXXXXXX" value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })} required />
+              <div className="modal__body" style={{ maxHeight: '70vh', overflowY: 'auto', padding: '1.5rem' }}>
+                {error && (
+                  <div className="alert alert--danger" style={{ marginBottom: '1rem' }}>
+                    <i className="bi bi-exclamation-circle" /> {error}
                   </div>
+                )}
+
+                {/* Member Information Section */}
+                <div style={{ marginBottom: '1.5rem' }}>
+                  <h4 style={{ 
+                    fontSize: '0.85rem', 
+                    fontWeight: 600, 
+                    color: 'var(--color-text-muted)',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.5px',
+                    marginBottom: '1rem',
+                    borderBottom: '1px solid var(--color-border)',
+                    paddingBottom: '0.5rem'
+                  }}>
+                    <i className="bi bi-person" /> Member Information
+                  </h4>
+
                   <div className="form-group">
-                    <label className="form-label form-label--required">Email</label>
-                    <input type="email" className="form-control" placeholder="member@example.com" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} required={form.create_user} />
+                    <label className="form-label form-label--required">Branch</label>
+                    <select 
+                      className="form-control" 
+                      value={form.branch} 
+                      onChange={e => setForm({ ...form, branch: e.target.value })} 
+                      required
+                    >
+                      <option value="">Select branch</option>
+                      {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                    </select>
                   </div>
-                </div>
 
-                <div className="form-row">
                   <div className="form-group">
-                    <label className="form-label">ID Number</label>
-                    <input className="form-control" value={form.id_number} onChange={e => setForm({ ...form, id_number: e.target.value })} />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Shares</label>
-                    <input type="number" min="1" className="form-control" value={form.shares} onChange={e => setForm({ ...form, shares: e.target.value })} />
-                  </div>
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label form-label--required">Date Joined</label>
-                  <input type="date" className="form-control" value={form.date_joined} onChange={e => setForm({ ...form, date_joined: e.target.value })} required />
-                </div>
-
-                <hr style={{ margin: '1.5rem 0' }} />
-
-                <div className="form-group">
-                  <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+                    <label className="form-label form-label--required">Full Name</label>
                     <input 
-                      type="checkbox" 
-                      checked={form.create_user} 
-                      onChange={e => setForm({ ...form, create_user: e.target.checked })} 
+                      className="form-control" 
+                      placeholder="Enter full name"
+                      value={form.full_name} 
+                      onChange={e => setForm({ ...form, full_name: e.target.value })} 
+                      required 
                     />
-                    <span>Create user account automatically</span>
-                  </label>
-                  <small className="form-help" style={{ color: 'var(--color-text-muted)' }}>
-                    <i className="bi bi-info-circle" /> 
-                    {form.create_user ? 'A user account will be created with MEMBER role.' : 'No user account will be created.'}
-                  </small>
+                  </div>
+
+                  <div className="form-row">
+                    <div className="form-group" style={{ flex: 1 }}>
+                      <label className="form-label form-label--required">Phone Number</label>
+                      <input 
+                        className="form-control" 
+                        placeholder="07XXXXXXXX" 
+                        value={form.phone} 
+                        onChange={e => setForm({ ...form, phone: e.target.value })} 
+                        required 
+                      />
+                    </div>
+                    <div className="form-group" style={{ flex: 1 }}>
+                      <label className="form-label">Email Address</label>
+                      <input 
+                        type="email" 
+                        className="form-control" 
+                        placeholder="member@example.com" 
+                        value={form.email} 
+                        onChange={e => setForm({ ...form, email: e.target.value })} 
+                        required={form.create_user}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="form-row">
+                    <div className="form-group" style={{ flex: 1 }}>
+                      <label className="form-label">ID Number</label>
+                      <input 
+                        className="form-control" 
+                        placeholder="ID / Passport number"
+                        value={form.id_number} 
+                        onChange={e => setForm({ ...form, id_number: e.target.value })} 
+                      />
+                    </div>
+                    <div className="form-group" style={{ flex: 1 }}>
+                      <label className="form-label">Shares</label>
+                      <input 
+                        type="number" 
+                        min="1" 
+                        className="form-control" 
+                        value={form.shares} 
+                        onChange={e => setForm({ ...form, shares: e.target.value })} 
+                      />
+                    </div>
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label form-label--required">Date Joined</label>
+                    <input 
+                      type="date" 
+                      className="form-control" 
+                      value={form.date_joined} 
+                      onChange={e => setForm({ ...form, date_joined: e.target.value })} 
+                      required 
+                    />
+                  </div>
                 </div>
 
-                {form.create_user && (
-                  <>
-                    <div className="form-row">
-                      <div className="form-group">
-                        <label className="form-label form-label--required">Password</label>
-                        <div style={{ position: 'relative' }}>
+                {/* User Account Section */}
+                <div style={{ marginBottom: '1rem' }}>
+                  <h4 style={{ 
+                    fontSize: '0.85rem', 
+                    fontWeight: 600, 
+                    color: 'var(--color-text-muted)',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.5px',
+                    marginBottom: '1rem',
+                    borderBottom: '1px solid var(--color-border)',
+                    paddingBottom: '0.5rem'
+                  }}>
+                    <i className="bi bi-person-circle" /> User Account
+                  </h4>
+
+                  <div className="form-group">
+                    <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+                      <input 
+                        type="checkbox" 
+                        checked={form.create_user} 
+                        onChange={e => setForm({ ...form, create_user: e.target.checked })} 
+                      />
+                      <span>Create user account automatically</span>
+                    </label>
+                    <small className="form-help" style={{ color: 'var(--color-text-muted)', display: 'block', marginTop: '0.25rem' }}>
+                      <i className="bi bi-info-circle" /> 
+                      {form.create_user ? 'A user account will be created with MEMBER role. The member can log in using their email and password.' : 'No user account will be created. The member will not be able to log in.'}
+                    </small>
+                  </div>
+
+                  {form.create_user && (
+                    <>
+                      <div className="form-row">
+                        <div className="form-group" style={{ flex: 1 }}>
+                          <label className="form-label form-label--required">Password</label>
+                          <div style={{ position: 'relative' }}>
+                            <input 
+                              type={showPassword ? 'text' : 'password'} 
+                              className="form-control" 
+                              placeholder="Min 6 characters"
+                              value={form.password} 
+                              onChange={e => setForm({ ...form, password: e.target.value })} 
+                              required={form.create_user}
+                              minLength="6"
+                            />
+                            <button 
+                              type="button"
+                              style={{ 
+                                position: 'absolute', 
+                                right: '8px', 
+                                top: '50%', 
+                                transform: 'translateY(-50%)',
+                                background: 'none',
+                                border: 'none',
+                                cursor: 'pointer',
+                                color: 'var(--color-text-muted)',
+                                padding: '4px'
+                              }}
+                              onClick={() => setShowPassword(!showPassword)}
+                            >
+                              <i className={`bi bi-eye${showPassword ? '' : '-slash'}`} />
+                            </button>
+                          </div>
+                        </div>
+                        <div className="form-group" style={{ flex: 1 }}>
+                          <label className="form-label form-label--required">Confirm Password</label>
                           <input 
-                            type={showPassword ? 'text' : 'password'} 
+                            type="password" 
                             className="form-control" 
-                            placeholder="Min 6 characters"
-                            value={form.password} 
-                            onChange={e => setForm({ ...form, password: e.target.value })} 
+                            placeholder="Confirm password"
+                            value={form.confirm_password} 
+                            onChange={e => setForm({ ...form, confirm_password: e.target.value })} 
                             required={form.create_user}
-                            minLength="6"
                           />
-                          <button 
-                            type="button"
-                            style={{ 
-                              position: 'absolute', 
-                              right: '8px', 
-                              top: '50%', 
-                              transform: 'translateY(-50%)',
-                              background: 'none',
-                              border: 'none',
-                              cursor: 'pointer',
-                              color: 'var(--color-text-muted)'
-                            }}
-                            onClick={() => setShowPassword(!showPassword)}
-                          >
-                            <i className={`bi bi-eye${showPassword ? '' : '-slash'}`} />
-                          </button>
                         </div>
                       </div>
-                      <div className="form-group">
-                        <label className="form-label form-label--required">Confirm Password</label>
-                        <input 
-                          type="password" 
-                          className="form-control" 
-                          placeholder="Confirm password"
-                          value={form.confirm_password} 
-                          onChange={e => setForm({ ...form, confirm_password: e.target.value })} 
-                          required={form.create_user}
-                        />
-                      </div>
-                    </div>
-                    <small className="form-help" style={{ color: 'var(--color-text-muted)' }}>
-                      <i className="bi bi-shield-check" /> 
-                      The user will be able to log in with their email and this password.
-                    </small>
-                  </>
-                )}
+                      <small className="form-help" style={{ color: 'var(--color-text-muted)', display: 'block', marginTop: '0.25rem' }}>
+                        <i className="bi bi-shield-check" /> 
+                        The user will be able to log in with their email and this password.
+                      </small>
+                    </>
+                  )}
+                </div>
               </div>
-              <div className="modal__footer">
-                <button type="button" className="btn btn--secondary" onClick={() => setModalOpen(false)}>Cancel</button>
-                <button type="submit" className="btn btn--primary" disabled={saving}>
-                  {saving ? <><span className="spinner spinner--sm spinner--white" /> Creating…</> : 'Create Member'}
+              <div className="modal__footer" style={{ 
+                padding: '1rem 1.5rem', 
+                borderTop: '1px solid var(--color-border)',
+                display: 'flex',
+                justifyContent: 'flex-end',
+                gap: '0.75rem'
+              }}>
+                <button type="button" className="btn btn--secondary" onClick={() => setModalOpen(false)}>
+                  Cancel
+                </button>
+                <button type="submit" className="btn btn--primary" disabled={saving} style={{ minWidth: '120px' }}>
+                  {saving ? (
+                    <><span className="spinner spinner--sm spinner--white" /> Creating…</>
+                  ) : (
+                    'Create Member'
+                  )}
                 </button>
               </div>
             </form>
