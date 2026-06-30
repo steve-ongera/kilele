@@ -1019,18 +1019,44 @@ class PropertyDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = Property.objects.select_related('branch')
 
 
+# RENTALS - Units (Updated to only show tenant's own unit)
 class UnitListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated, IsFinanceOfficerOrAbove]
+    permission_classes = [IsAuthenticated]
     serializer_class = UnitSerializer
 
+    def get_permissions(self):
+        if self.request.method == 'POST':
+            return [IsAuthenticated(), IsFinanceOfficerOrAbove()]
+        return [IsAuthenticated()]
+
     def get_queryset(self):
+        user = self.request.user
         qs = Unit.objects.select_related('property').order_by('property', 'unit_number')
+        
+        # TENANTS can only see their own unit
+        if user.role == UserRole.TENANT:
+            try:
+                tenant = user.tenant
+                # Only show the tenant's assigned unit
+                if tenant.unit_id:
+                    qs = qs.filter(id=tenant.unit_id)
+                else:
+                    # If tenant has no unit, return empty queryset
+                    return qs.none()
+            except:
+                return qs.none()
+        # MEMBERS and other roles can see all units (filtered by branch)
+        elif user.role != UserRole.SUPER_ADMIN and user.branch:
+            qs = qs.filter(property__branch=user.branch)
+            
+        # Additional filters
         property_id = self.request.query_params.get('property')
         if property_id:
             qs = qs.filter(property__id=property_id)
         occupancy = self.request.query_params.get('occupancy_status')
         if occupancy:
             qs = qs.filter(occupancy_status=occupancy)
+            
         return qs
 
     def perform_create(self, serializer):
@@ -1126,13 +1152,21 @@ class RentCollectionListCreateView(generics.ListCreateAPIView):
         serializer.save(created_by=self.request.user)
 
 
+# RENTALS - Maintenance Requests (Updated for better tenant support)
+# RENTALS - Maintenance Requests (Updated to not require unit in request for tenants)
 class MaintenanceRequestListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = MaintenanceRequestSerializer
 
+    def get_permissions(self):
+        if self.request.method == 'POST':
+            return [IsAuthenticated()]
+        return [IsAuthenticated()]
+
     def get_queryset(self):
         user = self.request.user
         qs = MaintenanceRequest.objects.select_related('unit', 'tenant').order_by('-created_at')
+        
         if user.role == UserRole.TENANT:
             try:
                 qs = qs.filter(tenant=user.tenant)
@@ -1140,6 +1174,7 @@ class MaintenanceRequestListCreateView(generics.ListCreateAPIView):
                 return qs.none()
         elif user.role != UserRole.SUPER_ADMIN and user.branch:
             qs = qs.filter(unit__property__branch=user.branch)
+            
         status_f = self.request.query_params.get('status')
         if status_f:
             qs = qs.filter(status=status_f)
@@ -1149,10 +1184,27 @@ class MaintenanceRequestListCreateView(generics.ListCreateAPIView):
         user = self.request.user
         if user.role == UserRole.TENANT:
             try:
-                serializer.save(tenant=user.tenant, created_by=user)
-            except Exception:
-                serializer.save(created_by=user)
+                tenant = user.tenant
+                # Always use the tenant's assigned unit
+                if not tenant.unit_id:
+                    from rest_framework import serializers
+                    raise serializers.ValidationError({"unit": "No unit assigned to this tenant. Please contact property manager."})
+                
+                # Save with tenant's unit - ignore any unit sent in request
+                serializer.save(
+                    tenant=tenant,
+                    unit=tenant.unit,  # Use the tenant's unit object
+                    created_by=user
+                )
+            except Exception as e:
+                from rest_framework import serializers
+                raise serializers.ValidationError({"detail": f"Error: {str(e)}"})
         else:
+            # For non-tenants, unit must be provided
+            unit_id = self.request.data.get('unit')
+            if not unit_id:
+                from rest_framework import serializers
+                raise serializers.ValidationError({"unit": "This field is required."})
             serializer.save(created_by=user)
 
 

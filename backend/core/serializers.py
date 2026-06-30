@@ -31,13 +31,14 @@ class UserSerializer(serializers.ModelSerializer):
     member_id = serializers.SerializerMethodField()
     investor_id = serializers.SerializerMethodField()
     tenant_id = serializers.SerializerMethodField()
+    unit_id = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = [
             'id', 'email', 'full_name', 'phone', 'role',
             'branch', 'branch_name', 'is_active', 'date_joined', 'last_login',
-            'member_id', 'investor_id', 'tenant_id',  # Make sure these are included
+            'member_id', 'investor_id', 'tenant_id', 'unit_id',
         ]
         read_only_fields = ['id', 'date_joined', 'last_login']
 
@@ -59,6 +60,14 @@ class UserSerializer(serializers.ModelSerializer):
         except:
             return None
 
+    def get_unit_id(self, obj):
+        """Return the tenant's unit ID if the user is a TENANT"""
+        try:
+            if obj.role == 'TENANT' and hasattr(obj, 'tenant') and obj.tenant:
+                return str(obj.tenant.unit_id) if obj.tenant.unit else None
+            return None
+        except:
+            return None
 
 class UserCreateSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=False, allow_blank=True)
@@ -71,7 +80,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
         password = validated_data.pop('password', None)
         user = User(**validated_data)
         if password:
-            user.set_password(password)  # This hashes the password
+            user.set_password(password)
         else:
             user.set_unusable_password()
         user.save()
@@ -686,17 +695,19 @@ class TenantListSerializer(serializers.ModelSerializer):
 
 class TenantDetailSerializer(serializers.ModelSerializer):
     unit_number = serializers.CharField(source='unit.unit_number', read_only=True)
+    unit_id = serializers.UUIDField(source='unit.id', read_only=True)  # Add this
     branch_name = serializers.CharField(source='branch.name', read_only=True)
     active_lease = serializers.SerializerMethodField()
-    user_email = serializers.SerializerMethodField()  # Add this
+    user_email = serializers.SerializerMethodField()
 
     class Meta:
         model = Tenant
         fields = [
-            'id', 'branch', 'branch_name', 'user', 'user_email',  # Add user_email
+            'id', 'branch', 'branch_name', 'user', 'user_email',
             'tenant_number', 'full_name', 'phone', 'email', 'id_number', 
-            'move_in_date', 'unit', 'unit_number', 'deposit_paid', 'status',
-            'active_lease', 'created_at', 'updated_at',
+            'move_in_date', 'unit', 'unit_id', 'unit_number',  # Add unit_id
+            'deposit_paid', 'status', 'active_lease', 
+            'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'tenant_number', 'created_at', 'updated_at']
 
@@ -705,7 +716,6 @@ class TenantDetailSerializer(serializers.ModelSerializer):
         return LeaseSerializer(lease).data if lease else None
 
     def get_user_email(self, obj):
-        """Return the user's email if associated, else None"""
         return obj.user.email if obj.user else None
 
 
@@ -829,6 +839,9 @@ class MaintenanceRequestSerializer(serializers.ModelSerializer):
             'status', 'completion_date', 'created_at',
         ]
         read_only_fields = ['id', 'created_at']
+        extra_kwargs = {
+            'unit': {'required': False}  # Make unit optional for tenants
+        }
 
 
 # ─────────────────────────────────────────────
