@@ -14,10 +14,11 @@ export default function MyRequests() {
   const [loanProducts, setLoanProducts] = useState([])
   const [hasMemberProfile, setHasMemberProfile] = useState(false)
   const [availableUnits, setAvailableUnits] = useState([])
+  const [fetchingUnits, setFetchingUnits] = useState(false)
 
   const [loanForm, setLoanForm] = useState({ product: '', principal: '', notes: '' })
   const [withdrawalForm, setWithdrawalForm] = useState({ withdrawal_type: 'DIVIDEND', amount_requested: '', notes: '' })
-  const [maintenanceForm, setMaintenanceForm] = useState({ unit: '', title: '', description: '' })
+  const [maintenanceForm, setMaintenanceForm] = useState({ title: '', description: '' })
 
   useEffect(() => { 
     console.log('=== MyRequests Component Mounted ===')
@@ -47,15 +48,27 @@ export default function MyRequests() {
   }, [user])
 
   const fetchTenantUnits = async () => {
+    if (!user?.tenant_id) {
+      console.warn('Cannot fetch units: No tenant_id')
+      return
+    }
+    
+    setFetchingUnits(true)
     try {
       console.log('=== Fetching Tenant Units ===')
-      // Get units for the tenant's branch or all units
       const res = await unitsAPI.list({})
+      console.log('Units API Response:', res.data)
       const units = toArray(res.data)
       console.log('Available units:', units)
+      
       setAvailableUnits(units)
     } catch (error) {
       console.error('Error fetching units:', error)
+      console.error('Error response:', error.response)
+      console.error('Error status:', error.response?.status)
+      console.error('Error data:', error.response?.data)
+    } finally {
+      setFetchingUnits(false)
     }
   }
 
@@ -110,6 +123,7 @@ export default function MyRequests() {
       } else if (role === 'TENANT' && user?.tenant_id) {
         console.log('Fetching maintenance for tenant:', user.tenant_id)
         const res = await maintenanceAPI.list({})
+        console.log('Maintenance response:', res.data)
         data = toArray(res.data).map(m => ({ ...m, _type: 'Maintenance', _label: m.title, _status: m.status }))
       } else {
         console.warn(`No valid profile for role: ${role}`, user)
@@ -178,11 +192,11 @@ export default function MyRequests() {
         if (!user?.tenant_id) {
           throw new Error('No tenant profile found. Please contact an administrator.')
         }
+        if (!user?.unit_id) {
+          throw new Error('No unit assigned to this tenant. Please contact property manager.')
+        }
         
         // Validate maintenance form
-        if (!maintenanceForm.unit) {
-          throw new Error('Please select a unit for the maintenance request.')
-        }
         if (!maintenanceForm.title || !maintenanceForm.title.trim()) {
           throw new Error('Please enter a title for the maintenance request.')
         }
@@ -190,24 +204,26 @@ export default function MyRequests() {
           throw new Error('Please enter a description for the maintenance request.')
         }
         
+        // Don't send unit - backend will use tenant's assigned unit
         const maintenanceData = { 
-          unit: maintenanceForm.unit,
           tenant: user.tenant_id,
           title: maintenanceForm.title.trim(),
           description: maintenanceForm.description.trim()
         }
         
         console.log('=== Submitting Maintenance Request ===')
-        console.log('Maintenance Data:', JSON.stringify(maintenanceData, null, 2))
+        console.log('Maintenance Data (unit will be auto-assigned by backend):', JSON.stringify(maintenanceData, null, 2))
         
-        await maintenanceAPI.create(maintenanceData)
+        const response = await maintenanceAPI.create(maintenanceData)
+        console.log('Maintenance Response:', response)
+        console.log('Maintenance Response data:', response.data)
       }
       
       setModalOpen(false)
       // Reset forms
       setLoanForm({ product: '', principal: '', notes: '' })
       setWithdrawalForm({ withdrawal_type: 'DIVIDEND', amount_requested: '', notes: '' })
-      setMaintenanceForm({ unit: '', title: '', description: '' })
+      setMaintenanceForm({ title: '', description: '' })
       await fetchRequests()
       
     } catch (err) {
@@ -254,7 +270,7 @@ export default function MyRequests() {
   const canSubmit = () => {
     if (role === 'MEMBER') return !!user?.member_id
     if (role === 'INVESTOR') return !!user?.investor_id
-    if (role === 'TENANT') return !!user?.tenant_id
+    if (role === 'TENANT') return !!user?.tenant_id && !!user?.unit_id
     return false
   }
 
@@ -461,30 +477,44 @@ export default function MyRequests() {
                         No tenant profile found. Please contact an administrator.
                       </div>
                     )}
-                    <div className="form-group">
-                      <label className="form-label form-label--required">Unit</label>
-                      <select 
-                        className="form-control" 
-                        value={maintenanceForm.unit} 
-                        onChange={e => setMaintenanceForm({ ...maintenanceForm, unit: e.target.value })} 
-                        required
-                        disabled={!user?.tenant_id}
-                      >
-                        <option value="">Select a unit...</option>
-                        {availableUnits.map(u => (
-                          <option key={u.id} value={u.id}>
-                            {u.property_name} — {u.unit_number} 
-                            {u.id === user?.unit_id ? ' (Your Unit)' : ''}
-                          </option>
-                        ))}
-                      </select>
-                      {user?.unit_id && (
+                    
+                    {user?.tenant_id && !user?.unit_id && (
+                      <div className="alert alert--warning">
+                        <i className="bi bi-exclamation-triangle" />
+                        You don't have a unit assigned yet. Please contact your property manager to assign you a unit before submitting maintenance requests.
+                      </div>
+                    )}
+                    
+                    {user?.unit_id && (
+                      <div className="form-group">
+                        <label className="form-label">Unit</label>
+                        <div style={{ 
+                          padding: '0.75rem', 
+                          background: 'var(--color-bg-light)', 
+                          borderRadius: 'var(--radius)',
+                          border: '1px solid var(--color-border)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '0.5rem'
+                        }}>
+                          <i className="bi bi-door-open" style={{ color: 'var(--color-primary)' }} />
+                          <span>
+                            <strong>
+                              {availableUnits.find(u => u.id === user.unit_id)?.property_name || 'Your Unit'}
+                            </strong>
+                            {' — '}
+                            {availableUnits.find(u => u.id === user.unit_id)?.unit_number || 'Unit ' + user.unit_id}
+                          </span>
+                          <span className="badge badge--success" style={{ marginLeft: 'auto' }}>
+                            <i className="bi bi-check-circle" /> Assigned
+                          </span>
+                        </div>
                         <small className="form-help" style={{ color: 'var(--color-text-muted)' }}>
-                          <i className="bi bi-info-circle" /> 
-                          Your assigned unit: {availableUnits.find(u => u.id === user.unit_id)?.property_name} — {availableUnits.find(u => u.id === user.unit_id)?.unit_number}
+                          <i className="bi bi-info-circle" /> Maintenance requests will be submitted for your assigned unit.
                         </small>
-                      )}
-                    </div>
+                      </div>
+                    )}
+                    
                     <div className="form-group">
                       <label className="form-label form-label--required">Issue Title</label>
                       <input 
@@ -493,9 +523,10 @@ export default function MyRequests() {
                         value={maintenanceForm.title} 
                         onChange={e => setMaintenanceForm({ ...maintenanceForm, title: e.target.value })} 
                         required
-                        disabled={!user?.tenant_id}
+                        disabled={!user?.tenant_id || !user?.unit_id}
                       />
                     </div>
+                    
                     <div className="form-group">
                       <label className="form-label form-label--required">Description</label>
                       <textarea 
@@ -505,7 +536,7 @@ export default function MyRequests() {
                         value={maintenanceForm.description} 
                         onChange={e => setMaintenanceForm({ ...maintenanceForm, description: e.target.value })} 
                         required
-                        disabled={!user?.tenant_id}
+                        disabled={!user?.tenant_id || !user?.unit_id}
                       />
                     </div>
                   </>
