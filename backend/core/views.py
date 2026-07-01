@@ -1917,3 +1917,104 @@ class RentalsReportSummaryView(views.APIView):
             'occupancy_table': occupancy_table,
             'maintenance_table': maintenance_table,
         })
+        
+        
+
+# ─────────────────────────────────────────────
+# TABLE BANKING REPORT SUMMARY
+# ─────────────────────────────────────────────
+
+class TBReportSummaryView(views.APIView):
+    permission_classes = [IsAuthenticated, IsAuditorOrAbove]
+
+    def get(self, request):
+        user = request.user
+        year = int(request.query_params.get('year', timezone.now().year))
+        month = request.query_params.get('month')
+        branch_id = request.query_params.get('branch')
+
+        branch_qs = Branch.objects.filter(branch_type=BranchType.TABLE_BANKING, is_active=True)
+        if user.role != UserRole.SUPER_ADMIN and user.branch:
+            branch_qs = branch_qs.filter(id=user.branch_id)
+        if branch_id:
+            branch_qs = branch_qs.filter(id=branch_id)
+
+        members_qs = Member.objects.filter(branch__in=branch_qs)
+        contrib_qs = Contribution.objects.filter(member__branch__in=branch_qs, period_year=year)
+        loans_qs = Loan.objects.filter(branch__in=branch_qs)
+
+        if month:
+            contrib_qs = contrib_qs.filter(period_month=month)
+
+        # ---- 4 STAT CARDS ----
+        total_contrib = contrib_qs.filter(status='POSTED').aggregate(t=Sum('paid'))['t'] or 0
+        total_interest = LoanRepayment.objects.filter(
+            loan__branch__in=branch_qs
+        ).aggregate(t=Sum('interest_paid'))['t'] or 0
+        outstanding_loans = loans_qs.filter(
+            status__in=['PERFORMING', 'DISBURSED', 'WATCHLIST', 'OVERDUE']
+        ).aggregate(t=Sum('balance'))['t'] or 0
+        lending_fund = float(total_contrib) + float(total_interest) - float(outstanding_loans)
+
+        stats = {
+            'total_members': members_qs.filter(status='ACTIVE').count(),
+            'total_contributions': float(total_contrib),
+            'loans_outstanding': float(outstanding_loans),
+            'lending_fund': lending_fund,
+        }
+
+        # ---- LINE GRAPH: contributions vs loans disbursed across the year ----
+        trend = []
+        for m in range(1, 13):
+            c_qs = Contribution.objects.filter(member__branch__in=branch_qs, period_year=year, period_month=m)
+            l_qs = Loan.objects.filter(
+                branch__in=branch_qs, disbursement_date__year=year, disbursement_date__month=m
+            )
+            trend.append({
+                'month': datetime.date(year, m, 1).strftime('%b'),
+                'contributions': float(c_qs.filter(status='POSTED').aggregate(t=Sum('paid'))['t'] or 0),
+                'loans_disbursed': float(l_qs.aggregate(t=Sum('principal'))['t'] or 0),
+            })
+
+        # ---- BAR GRAPH: members & contributions per branch ----
+        branch_comparison = []
+        for b in branch_qs:
+            branch_comparison.append({
+                'branch_name': b.name,
+                'members': Member.objects.filter(branch=b, status='ACTIVE').count(),
+                'contributions': float(Contribution.objects.filter(
+                    member__branch=b, period_year=year, status='POSTED'
+                ).aggregate(t=Sum('paid'))['t'] or 0),
+            })
+
+        # ---- PIE: loan status distribution ----
+        loan_distribution = []
+        for st, label in LoanStatus.choices:
+            c = loans_qs.filter(status=st).count()
+            if c:
+                loan_distribution.append({'name': label, 'value': c})
+
+        # ---- DETAIL TABLES ----
+        contributions_table = ContributionSerializer(
+            contrib_qs.select_related('member').order_by('-period_month')[:300], many=True
+        ).data
+        loans_table = LoanListSerializer(
+            loans_qs.select_related('member', 'product').order_by('-created_at')[:300], many=True
+        ).data
+        arrears_table = ContributionSerializer(
+            contrib_qs.filter(arrears__gt=0).select_related('member').order_by('-arrears')[:300], many=True
+        ).data
+        members_table = MemberListSerializer(
+            members_qs.select_related('branch').order_by('-date_joined')[:300], many=True
+        ).data
+
+        return Response({
+            'stats': stats,
+            'trend': trend,
+            'branch_comparison': branch_comparison,
+            'loan_distribution': loan_distribution,
+            'contributions_table': contributions_table,
+            'loans_table': loans_table,
+            'arrears_table': arrears_table,
+            'members_table': members_table,
+        })

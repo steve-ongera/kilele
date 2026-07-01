@@ -1,3 +1,4 @@
+//src/pages/wealth-alliance/WealthReports.jsx
 import { useState } from 'react'
 import { reportsAPI } from '../../services/api'
 
