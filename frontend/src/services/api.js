@@ -397,20 +397,12 @@ export const auditAPI = {
 // ─────────────────────────────────────────────
 
 export const reportsAPI = {
-  /**
-   * @param {string} type  - 'contributions' | 'loans' | 'arrears' | 'members' | 'rent-collection'
-   * @param {object} params - { format, branch, year, month }
-   */
   get: (type, params = {}) =>
     api.get(`/reports/${type}/`, {
       params: buildParams(params),
-      // If format=csv, expect blob
       responseType: params.format === 'csv' ? 'blob' : 'json',
     }),
 
-  /**
-   * Trigger a browser download for a CSV report.
-   */
   downloadCSV: async (type, params = {}, filename) => {
     const res = await reportsAPI.get(type, { ...params, format: 'csv' })
     const url = window.URL.createObjectURL(new Blob([res.data]))
@@ -422,6 +414,9 @@ export const reportsAPI = {
     a.remove()
     window.URL.revokeObjectURL(url)
   },
+
+  // NEW
+  tujijengeSummary: (params) => api.get('/tujijenge/reports/summary/', { params: buildParams(params) }),
 }
 
 
