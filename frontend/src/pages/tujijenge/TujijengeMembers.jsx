@@ -26,17 +26,25 @@ export default function TujijengeMembers() {
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
+  const [branchFilter, setBranchFilter] = useState('')
   const [page, setPage] = useState(1)
   const [count, setCount] = useState(0)
 
+  // Create modal
   const [modalOpen, setModalOpen] = useState(false)
   const [form, setForm] = useState(EMPTY_FORM)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [showPassword, setShowPassword] = useState(false)
 
+  // Edit modal
+  const [editMember, setEditMember] = useState(null)
+  const [editForm, setEditForm] = useState(null)
+  const [editSaving, setEditSaving] = useState(false)
+  const [editError, setEditError] = useState('')
+
   useEffect(() => { fetchBranches() }, [])
-  useEffect(() => { fetchMembers() }, [search, statusFilter, page])
+  useEffect(() => { fetchMembers() }, [search, statusFilter, branchFilter, page])
 
   const fetchBranches = async () => {
     try {
@@ -48,7 +56,7 @@ export default function TujijengeMembers() {
   const fetchMembers = async () => {
     setLoading(true)
     try {
-      const res = await membersAPI.list({ search, status: statusFilter, page })
+      const res = await membersAPI.list({ search, status: statusFilter, branch: branchFilter, page })
       const data = res.data
       setMembers(toArray(data))
       setCount(data?.count ?? toArray(data).length)
@@ -59,6 +67,7 @@ export default function TujijengeMembers() {
     }
   }
 
+  // ── CREATE ──────────────────────────────────
   const openCreate = () => {
     setForm({ 
       ...EMPTY_FORM, 
@@ -74,7 +83,6 @@ export default function TujijengeMembers() {
     e.preventDefault()
     setError('')
     
-    // Validate required fields
     if (!form.full_name.trim() || !form.phone.trim() || !form.branch) {
       return setError('Branch, full name and phone are required.')
     }
@@ -106,7 +114,6 @@ export default function TujijengeMembers() {
         password: form.create_user ? form.password : '',
       }
       
-      console.log('Member data:', memberData)
       await membersAPI.create(memberData)
       
       setModalOpen(false)
@@ -114,7 +121,6 @@ export default function TujijengeMembers() {
       fetchMembers()
       
     } catch (err) {
-      console.error('Error creating member:', err)
       let errorMessage = 'Failed to create member.'
       if (err.response?.data) {
         if (typeof err.response.data === 'object') {
@@ -137,6 +143,63 @@ export default function TujijengeMembers() {
     }
   }
 
+  // ── EDIT ────────────────────────────────────
+  const openEdit = (member) => {
+    setEditMember(member)
+    setEditForm({
+      branch: member.branch || '',
+      full_name: member.full_name || '',
+      phone: member.phone || '',
+      email: member.email || '',
+      id_number: member.id_number || '',
+      date_joined: member.date_joined || '',
+      shares: member.shares || 1,
+      status: member.status || 'ACTIVE',
+    })
+    setEditError('')
+  }
+
+  const handleEditSubmit = async (e) => {
+    e.preventDefault()
+    setEditError('')
+    if (!editForm.full_name.trim() || !editForm.phone.trim() || !editForm.branch) {
+      return setEditError('Branch, full name and phone are required.')
+    }
+    setEditSaving(true)
+    try {
+      await membersAPI.update(editMember.id, {
+        branch: editForm.branch,
+        full_name: editForm.full_name,
+        phone: editForm.phone,
+        email: editForm.email,
+        id_number: editForm.id_number,
+        date_joined: editForm.date_joined,
+        shares: parseInt(editForm.shares) || 1,
+        status: editForm.status,
+        create_user: false,   // skip user-account creation/validation on edit
+      })
+      setEditMember(null)
+      fetchMembers()
+    } catch (err) {
+      let errorMessage = 'Failed to update member.'
+      if (err.response?.data) {
+        if (typeof err.response.data === 'object') {
+          const errors = []
+          for (const [key, value] of Object.entries(err.response.data)) {
+            if (Array.isArray(value)) errors.push(`${key}: ${value.join(', ')}`)
+            else if (typeof value === 'string') errors.push(`${key}: ${value}`)
+          }
+          errorMessage = errors.join('; ') || errorMessage
+        } else {
+          errorMessage = err.response.data || errorMessage
+        }
+      }
+      setEditError(errorMessage)
+    } finally {
+      setEditSaving(false)
+    }
+  }
+
   const totalPages = Math.max(1, Math.ceil(count / 25))
 
   return (
@@ -154,6 +217,10 @@ export default function TujijengeMembers() {
               onChange={e => { setSearch(e.target.value); setPage(1) }}
             />
           </div>
+          <select className="form-control" style={{ maxWidth: 180 }} value={branchFilter} onChange={e => { setBranchFilter(e.target.value); setPage(1) }}>
+            <option value="">All Branches</option>
+            {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+          </select>
           <select className="form-control" style={{ maxWidth: 160 }} value={statusFilter} onChange={e => { setStatusFilter(e.target.value); setPage(1) }}>
             <option value="">All Statuses</option>
             {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
@@ -218,9 +285,14 @@ export default function TujijengeMembers() {
                       )}
                     </td>
                     <td>
-                      <Link to={`/tujijenge/members/${m.id}/statement`} className="btn btn--ghost btn--sm">
-                        <i className="bi bi-file-text" /> Statement
-                      </Link>
+                      <div className="d-flex gap-8">
+                        <button className="btn btn--outline btn--sm" onClick={() => openEdit(m)}>
+                          <i className="bi bi-pencil" /> Edit
+                        </button>
+                        <Link to={`/tujijenge/members/${m.id}/statement`} className="btn btn--ghost btn--sm">
+                          <i className="bi bi-file-text" /> Statement
+                        </Link>
+                      </div>
                     </td>
                   </tr>
                 ))
@@ -243,6 +315,7 @@ export default function TujijengeMembers() {
         )}
       </div>
 
+      {/* CREATE MODAL */}
       {modalOpen && (
         <div className="modal-backdrop" onClick={() => setModalOpen(false)}>
           <div className="modal" style={{ maxWidth: '600px', width: '100%' }} onClick={e => e.stopPropagation()}>
@@ -258,7 +331,6 @@ export default function TujijengeMembers() {
                   </div>
                 )}
 
-                {/* Member Information Section */}
                 <div style={{ marginBottom: '1.5rem' }}>
                   <h4 style={{ 
                     fontSize: '0.85rem', 
@@ -355,7 +427,6 @@ export default function TujijengeMembers() {
                   </div>
                 </div>
 
-                {/* User Account Section */}
                 <div style={{ marginBottom: '1rem' }}>
                   <h4 style={{ 
                     fontSize: '0.85rem', 
@@ -454,6 +525,133 @@ export default function TujijengeMembers() {
                     <><span className="spinner spinner--sm spinner--white" /> Creating…</>
                   ) : (
                     'Create Member'
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* EDIT MODAL */}
+      {editMember && editForm && (
+        <div className="modal-backdrop" onClick={() => setEditMember(null)}>
+          <div className="modal" style={{ maxWidth: '600px', width: '100%' }} onClick={e => e.stopPropagation()}>
+            <div className="modal__header">
+              <h3 className="modal__title">Edit {editMember.member_number} — {editMember.full_name}</h3>
+              <button className="modal__close" onClick={() => setEditMember(null)}><i className="bi bi-x" /></button>
+            </div>
+            <form onSubmit={handleEditSubmit}>
+              <div className="modal__body" style={{ maxHeight: '70vh', overflowY: 'auto', padding: '1.5rem' }}>
+                {editError && (
+                  <div className="alert alert--danger" style={{ marginBottom: '1rem' }}>
+                    <i className="bi bi-exclamation-circle" /> {editError}
+                  </div>
+                )}
+
+                <div className="form-group">
+                  <label className="form-label form-label--required">Branch</label>
+                  <select
+                    className="form-control"
+                    value={editForm.branch}
+                    onChange={e => setEditForm({ ...editForm, branch: e.target.value })}
+                    required
+                  >
+                    <option value="">Select branch</option>
+                    {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                  </select>
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label form-label--required">Full Name</label>
+                  <input
+                    className="form-control"
+                    value={editForm.full_name}
+                    onChange={e => setEditForm({ ...editForm, full_name: e.target.value })}
+                    required
+                  />
+                </div>
+
+                <div className="form-row">
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <label className="form-label form-label--required">Phone Number</label>
+                    <input
+                      className="form-control"
+                      value={editForm.phone}
+                      onChange={e => setEditForm({ ...editForm, phone: e.target.value })}
+                      required
+                    />
+                  </div>
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <label className="form-label">Email Address</label>
+                    <input
+                      type="email"
+                      className="form-control"
+                      value={editForm.email}
+                      onChange={e => setEditForm({ ...editForm, email: e.target.value })}
+                    />
+                  </div>
+                </div>
+
+                <div className="form-row">
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <label className="form-label">ID Number</label>
+                    <input
+                      className="form-control"
+                      value={editForm.id_number}
+                      onChange={e => setEditForm({ ...editForm, id_number: e.target.value })}
+                    />
+                  </div>
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <label className="form-label">Shares</label>
+                    <input
+                      type="number"
+                      min="1"
+                      className="form-control"
+                      value={editForm.shares}
+                      onChange={e => setEditForm({ ...editForm, shares: e.target.value })}
+                    />
+                  </div>
+                </div>
+
+                <div className="form-row">
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <label className="form-label form-label--required">Date Joined</label>
+                    <input
+                      type="date"
+                      className="form-control"
+                      value={editForm.date_joined}
+                      onChange={e => setEditForm({ ...editForm, date_joined: e.target.value })}
+                      required
+                    />
+                  </div>
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <label className="form-label form-label--required">Status</label>
+                    <select
+                      className="form-control"
+                      value={editForm.status}
+                      onChange={e => setEditForm({ ...editForm, status: e.target.value })}
+                    >
+                      {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                  </div>
+                </div>
+              </div>
+              <div className="modal__footer" style={{
+                padding: '1rem 1.5rem',
+                borderTop: '1px solid var(--color-border)',
+                display: 'flex',
+                justifyContent: 'flex-end',
+                gap: '0.75rem'
+              }}>
+                <button type="button" className="btn btn--secondary" onClick={() => setEditMember(null)}>
+                  Cancel
+                </button>
+                <button type="submit" className="btn btn--primary" disabled={editSaving} style={{ minWidth: '140px' }}>
+                  {editSaving ? (
+                    <><span className="spinner spinner--sm spinner--white" /> Saving…</>
+                  ) : (
+                    'Save Changes'
                   )}
                 </button>
               </div>
