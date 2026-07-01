@@ -47,7 +47,7 @@ from .serializers import (
     ApprovalRequestSerializer, ApprovalActionSerializer, ApprovalRejectSerializer,
     AuditLogSerializer,
     NotificationSerializer, NotificationTemplateSerializer,
-    DashboardSerializer,
+    DashboardSerializer, InvestorDividendSerializer
 )
 from .permissions import (
     IsSuperAdmin, IsBranchAdminOrAbove, IsFinanceOfficerOrAbove,
@@ -2017,4 +2017,103 @@ class TBReportSummaryView(views.APIView):
             'loans_table': loans_table,
             'arrears_table': arrears_table,
             'members_table': members_table,
+        })
+        
+        
+        
+
+# ─────────────────────────────────────────────
+# WEALTH ALLIANCE REPORT SUMMARY
+# ─────────────────────────────────────────────
+
+class WealthReportSummaryView(views.APIView):
+    permission_classes = [IsAuthenticated, IsAuditorOrAbove]
+
+    def get(self, request):
+        user = request.user
+        year = int(request.query_params.get('year', timezone.now().year))
+
+        investors_qs = Investor.objects.filter(status='ACTIVE')
+        if user.role != UserRole.SUPER_ADMIN and user.branch:
+            investors_qs = investors_qs.filter(branch=user.branch)
+
+        txn_qs = InvestmentTransaction.objects.filter(investor__in=investors_qs)
+        dividends_qs = InvestorDividend.objects.filter(
+            investor__in=investors_qs, declaration__declaration_date__year=year
+        )
+        withdrawals_qs = InvestorWithdrawal.objects.filter(investor__in=investors_qs)
+
+        # ---- 4 STAT CARDS ----
+        total_capital = sum(inv.current_capital for inv in investors_qs) or 0
+        dividends_paid = dividends_qs.filter(is_processed=True).aggregate(
+            t=Sum('dividend_amount')
+        )['t'] or 0
+        pending_withdrawals = withdrawals_qs.filter(status__in=['PENDING', 'UNDER_REVIEW'])
+
+        stats = {
+            'total_investors': investors_qs.count(),
+            'total_capital': float(total_capital),
+            'dividends_paid': float(dividends_paid),
+            'pending_withdrawals': pending_withdrawals.count(),
+        }
+
+        # ---- LINE GRAPH: deposits vs withdrawals across the year ----
+        trend = []
+        for m in range(1, 13):
+            m_qs = txn_qs.filter(transaction_date__year=year, transaction_date__month=m)
+            trend.append({
+                'month': datetime.date(year, m, 1).strftime('%b'),
+                'deposits': float(m_qs.filter(
+                    transaction_type__in=['DEPOSIT', 'REINVESTMENT']
+                ).aggregate(t=Sum('amount'))['t'] or 0),
+                'withdrawals': float(m_qs.filter(
+                    transaction_type='WITHDRAWAL'
+                ).aggregate(t=Sum('amount'))['t'] or 0),
+            })
+
+        # ---- BAR GRAPH: capital deployed per asset class ----
+        asset_qs = AssetClass.objects.filter(is_active=True)
+        if user.role != UserRole.SUPER_ADMIN and user.branch:
+            asset_qs = asset_qs.filter(branch=user.branch)
+
+        asset_breakdown = []
+        for a in asset_qs:
+            amount = InvestmentTransaction.objects.filter(
+                asset_class=a, transaction_type__in=['DEPOSIT', 'REINVESTMENT']
+            ).aggregate(t=Sum('amount'))['t'] or 0
+            if amount:
+                asset_breakdown.append({'asset_class': a.name, 'amount': float(amount)})
+
+        # ---- PIE: capital by risk level ----
+        risk_distribution = []
+        for level, label in [('LOW', 'Low'), ('MEDIUM', 'Medium'), ('HIGH', 'High'), ('VERY_HIGH', 'Very High')]:
+            amount = InvestmentTransaction.objects.filter(
+                asset_class__risk_level=level, transaction_type__in=['DEPOSIT', 'REINVESTMENT']
+            ).aggregate(t=Sum('amount'))['t'] or 0
+            if amount:
+                risk_distribution.append({'name': label, 'value': float(amount)})
+
+        # ---- DETAIL TABLES ----
+        investors_table = InvestorListSerializer(
+            investors_qs.select_related('branch').order_by('-join_date')[:300], many=True
+        ).data
+        transactions_table = InvestmentTransactionSerializer(
+            txn_qs.select_related('investor', 'asset_class').order_by('-transaction_date')[:300], many=True
+        ).data
+        dividends_table = InvestorDividendSerializer(
+            dividends_qs.select_related('investor').order_by('-id')[:300], many=True
+        ).data
+        withdrawals_table = InvestorWithdrawalSerializer(
+            withdrawals_qs.select_related('investor').order_by('-created_at')[:300], many=True
+        ).data
+
+        return Response({
+            'stats': stats,
+            'trend': trend,
+            'asset_breakdown': asset_breakdown,
+            'risk_distribution': risk_distribution,
+            'investors_table': investors_table,
+            'transactions_table': transactions_table,
+            'dividends_table': dividends_table,
+            'withdrawals_table': withdrawals_table,
         })
