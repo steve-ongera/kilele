@@ -1,38 +1,38 @@
 /* ═══════════════════════════════════════════════════════════════
    KILELE RIDGE — DESIGN SYSTEM
-   Theme: White · Blue · Black
+   Theme: Cream · Ridge Green · Brass
    ═══════════════════════════════════════════════════════════════ */
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,600;0,9..144,700;0,9..144,800;1,9..144,400;1,9..144,500&family=Inter:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
 
 /* ─────────────────────────────────────────────
    CSS VARIABLES
    ───────────────────────────────────────────── */
 
 :root {
-  /* Blues */
-  --blue-900: #0a1628;
-  --blue-800: #0f2247;
-  --blue-700: #1a3a6e;
-  --blue-600: #1d4ed8;
-  --blue-500: #2563eb;
-  --blue-400: #3b82f6;
-  --blue-300: #60a5fa;
-  --blue-100: #dbeafe;
-  --blue-50:  #eff6ff;
+  /* Ridge greens */
+  --blue-900: #0b1f16;
+  --blue-800: #0f2b1f;
+  --blue-700: #14432a;
+  --blue-600: #1b5636;
+  --blue-500: #1f6b42;
+  --blue-400: #2f8455;
+  --blue-300: #4c9469;
+  --blue-100: #dce8df;
+  --blue-50:  #eef3ee;
 
   /* Neutrals */
-  --black:     #0a0e1a;
-  --gray-900:  #111827;
-  --gray-800:  #1f2937;
-  --gray-700:  #374151;
-  --gray-600:  #4b5563;
-  --gray-500:  #6b7280;
-  --gray-400:  #9ca3af;
-  --gray-300:  #d1d5db;
-  --gray-200:  #e5e7eb;
-  --gray-100:  #f3f4f6;
-  --gray-50:   #f9fafb;
+  --black:     #1b1b17;
+  --gray-900:  #1b1b17;
+  --gray-800:  #2a2823;
+  --gray-700:  #423f37;
+  --gray-600:  #5b5850;
+  --gray-500:  #726f65;
+  --gray-400:  #8c8a80;
+  --gray-300:  #b3b0a4;
+  --gray-200:  #ddd6c9;
+  --gray-100:  #eae7dc;
+  --gray-50:   #f7f5ef;
   --white:     #ffffff;
 
   /* Semantic */
@@ -62,22 +62,23 @@
   --sidebar-width: 248px;
   --sidebar-collapsed: 64px;
   --navbar-height: 60px;
-  --radius-sm:  4px;
-  --radius:     8px;
-  --radius-md:  10px;
-  --radius-lg:  14px;
-  --radius-xl:  20px;
+  --radius-sm:  5px;
+  --radius:     6px;
+  --radius-md:  7px;
+  --radius-lg:  8px;
+  --radius-xl:  8px;
 
   /* Shadows */
-  --shadow-sm:  0 1px 2px rgba(0,0,0,.05);
-  --shadow:     0 1px 6px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.04);
-  --shadow-md:  0 4px 12px rgba(0,0,0,.10);
-  --shadow-lg:  0 8px 24px rgba(0,0,0,.12);
-  --shadow-xl:  0 16px 40px rgba(0,0,0,.14);
+  --shadow-sm:  0 1px 2px rgba(20,25,15,.06);
+  --shadow:     0 1px 6px rgba(20,25,15,.10), 0 1px 2px rgba(20,25,15,.05);
+  --shadow-md:  0 4px 12px rgba(20,25,15,.12);
+  --shadow-lg:  0 8px 24px rgba(20,25,15,.14);
+  --shadow-xl:  0 16px 40px rgba(20,25,15,.16);
 
   /* Type */
   --font-sans:    'Inter', system-ui, -apple-system, sans-serif;
-  --font-display: 'Plus Jakarta Sans', 'Inter', sans-serif;
+  --font-display: 'Fraunces', Georgia, serif;
+  --font-mono:    'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace;
 
   /* Transitions */
   --transition: 200ms cubic-bezier(.4,0,.2,1);
@@ -370,7 +371,7 @@ img, svg { display: block; max-width: 100%; }
 }
 .navbar__notif-item:hover { background: var(--gray-50); }
 .navbar__notif-item--unread { background: var(--blue-50); }
-.navbar__notif-item--unread:hover { background: #e0edff; }
+.navbar__notif-item--unread:hover { background: #d7e6db; }
 
 .navbar__notif-dot {
   width: 8px;
@@ -762,11 +763,11 @@ img, svg { display: block; max-width: 100%; }
 }
 
 .kpi-card__value {
-  font-family: var(--font-display);
-  font-size: 24px;
-  font-weight: 700;
+  font-family: var(--font-mono);
+  font-size: 23px;
+  font-weight: 600;
   color: var(--text-primary);
-  letter-spacing: -0.5px;
+  letter-spacing: -0.01em;
   line-height: 1;
 }
 
@@ -911,7 +912,7 @@ tbody tr:last-child td { border-bottom: none; }
 .btn--primary:hover {
   background: var(--primary-dark);
   border-color: var(--primary-dark);
-  box-shadow: 0 2px 8px rgba(37,99,235,.3);
+  box-shadow: 0 2px 8px rgba(31,107,66,.3);
 }
 
 .btn--secondary {
@@ -1013,7 +1014,7 @@ tbody tr:last-child td { border-bottom: none; }
 }
 .form-control:focus {
   border-color: var(--border-focus);
-  box-shadow: 0 0 0 3px rgba(59,130,246,.12);
+  box-shadow: 0 0 0 3px rgba(47,132,85,.14);
 }
 .form-control::placeholder { color: var(--gray-400); }
 .form-control:disabled {
@@ -1120,7 +1121,7 @@ textarea.form-control {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0,0,0,.5);
+  background: rgba(11,31,22,.5);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1440,6 +1441,7 @@ textarea.form-control {
 }
 
 .kes {
+  font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
   font-feature-settings: 'tnum';
 }
@@ -1557,7 +1559,7 @@ textarea.form-control {
   width: 480px;
   height: 480px;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(59,130,246,.25), transparent 70%);
+  background: radial-gradient(circle, rgba(199,154,94,.28), transparent 70%);
   top: -160px;
   right: -160px;
 }
@@ -1692,7 +1694,7 @@ textarea.form-control {
   text-align: center;
   font-size: 22px;
   font-weight: 700;
-  font-family: var(--font-display);
+  font-family: var(--font-mono);
   border: 1.5px solid var(--border);
   border-radius: var(--radius);
   color: var(--text-primary);
@@ -1703,7 +1705,7 @@ textarea.form-control {
 .otp-input:focus {
   border-color: var(--primary);
   background: var(--white);
-  box-shadow: 0 0 0 3px rgba(59,130,246,.12);
+  box-shadow: 0 0 0 3px rgba(31,107,66,.14);
 }
 .otp-input--error { border-color: var(--danger); }
 
@@ -1892,7 +1894,7 @@ textarea.form-control {
 }
 .notif-list-item:hover { background: var(--gray-50); }
 .notif-list-item--unread { background: var(--blue-50); }
-.notif-list-item--unread:hover { background: #e0edff; }
+.notif-list-item--unread:hover { background: #d7e6db; }
 .notif-list-item:last-child { border-bottom: none; }
 
 .notif-list-item__icon {
@@ -2059,11 +2061,11 @@ textarea.form-control {
 
 .audit-json {
   background: var(--gray-900);
-  color: #d4e8ff;
+  color: #d9ecdb;
   padding: 14px;
   border-radius: var(--radius);
   font-size: 12px;
-  font-family: 'SF Mono', Monaco, monospace;
+  font-family: var(--font-mono);
   overflow-x: auto;
   white-space: pre-wrap;
   word-break: break-word;
