@@ -1819,3 +1819,101 @@ class TujijengeReportSummaryView(views.APIView):
             'loans_table': loans_table,
             'arrears_table': arrears_table,
         })
+        
+        
+
+# ─────────────────────────────────────────────
+# RENTALS REPORT SUMMARY
+# ─────────────────────────────────────────────
+
+class RentalsReportSummaryView(views.APIView):
+    permission_classes = [IsAuthenticated, IsAuditorOrAbove]
+
+    def get(self, request):
+        user = request.user
+        year = int(request.query_params.get('year', timezone.now().year))
+        month = request.query_params.get('month')
+        property_id = request.query_params.get('property')
+
+        prop_qs = Property.objects.filter(status='ACTIVE')
+        if user.role != UserRole.SUPER_ADMIN and user.branch:
+            prop_qs = prop_qs.filter(branch=user.branch)
+        if property_id:
+            prop_qs = prop_qs.filter(id=property_id)
+
+        units_qs = Unit.objects.filter(property__in=prop_qs)
+        rent_qs = RentCollection.objects.filter(unit__property__in=prop_qs, period_year=year)
+        maint_qs = MaintenanceRequest.objects.filter(unit__property__in=prop_qs)
+
+        if month:
+            rent_qs = rent_qs.filter(period_month=month)
+
+        # ---- 4 STAT CARDS ----
+        total_units = units_qs.count()
+        occupied_units = units_qs.filter(occupancy_status='OCCUPIED').count()
+        occupancy_rate = round((occupied_units / total_units) * 100, 2) if total_units else 0
+
+        stats = {
+            'total_properties': prop_qs.count(),
+            'occupancy_rate': occupancy_rate,
+            'rent_collected': float(rent_qs.aggregate(t=Sum('paid'))['t'] or 0),
+            'total_arrears': float(rent_qs.aggregate(t=Sum('arrears'))['t'] or 0),
+        }
+
+        # ---- LINE GRAPH: rent expected vs collected across the year ----
+        trend = []
+        for m in range(1, 13):
+            m_qs = RentCollection.objects.filter(unit__property__in=prop_qs, period_year=year, period_month=m)
+            trend.append({
+                'month': datetime.date(year, m, 1).strftime('%b'),
+                'expected': float(m_qs.aggregate(t=Sum('expected'))['t'] or 0),
+                'collected': float(m_qs.aggregate(t=Sum('paid'))['t'] or 0),
+            })
+
+        # ---- BAR GRAPH: income vs maintenance cost per property ----
+        profitability = []
+        for p in prop_qs:
+            income = RentCollection.objects.filter(
+                unit__property=p, period_year=year
+            ).aggregate(t=Sum('paid'))['t'] or 0
+            cost = MaintenanceRequest.objects.filter(
+                unit__property=p, status='COMPLETED'
+            ).aggregate(t=Sum('cost'))['t'] or 0
+            profitability.append({
+                'property_name': p.name,
+                'income': float(income),
+                'maintenance_cost': float(cost),
+                'net': float(income) - float(cost),
+            })
+
+        # ---- PIE: occupancy status distribution ----
+        occupancy_distribution = []
+        for st, label in OccupancyStatus.choices:
+            c = units_qs.filter(occupancy_status=st).count()
+            if c:
+                occupancy_distribution.append({'name': label, 'value': c})
+
+        # ---- DETAIL TABLES ----
+        rent_collection_table = RentCollectionSerializer(
+            rent_qs.select_related('tenant', 'unit').order_by('-period_month')[:300], many=True
+        ).data
+        arrears_table = RentCollectionSerializer(
+            rent_qs.filter(arrears__gt=0).select_related('tenant', 'unit').order_by('-arrears')[:300], many=True
+        ).data
+        occupancy_table = UnitSerializer(
+            units_qs.select_related('property').order_by('property', 'unit_number')[:300], many=True
+        ).data
+        maintenance_table = MaintenanceRequestSerializer(
+            maint_qs.select_related('unit', 'tenant').order_by('-created_at')[:300], many=True
+        ).data
+
+        return Response({
+            'stats': stats,
+            'trend': trend,
+            'profitability': profitability,
+            'occupancy_distribution': occupancy_distribution,
+            'rent_collection_table': rent_collection_table,
+            'arrears_table': arrears_table,
+            'occupancy_table': occupancy_table,
+            'maintenance_table': maintenance_table,
+        })
