@@ -9,6 +9,7 @@ from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 from decimal import Decimal
 import csv, io, datetime
+from dateutil.relativedelta import relativedelta
 
 from .models import (
     User, OTPToken, Branch, SystemRule,
@@ -1665,3 +1666,156 @@ class NotificationMarkAllReadView(views.APIView):
     def post(self, request):
         Notification.objects.filter(user=request.user, is_read=False).update(is_read=True)
         return Response({'detail': 'All notifications marked as read.'})
+    
+# ─────────────────────────────────────────────
+# DASHBOARD GRAPHS
+# ─────────────────────────────────────────────
+
+class DashboardGraphsView(views.APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        today = timezone.now().date()
+
+        # ---- LINE GRAPH: contributions vs loans disbursed, last 6 months ----
+        trend = []
+        for i in range(5, -1, -1):
+            m = today.replace(day=1) - relativedelta(months=i)
+
+            contrib_qs = Contribution.objects.filter(
+                period_year=m.year, period_month=m.month, status='POSTED'
+            )
+            loan_qs = Loan.objects.filter(
+                disbursement_date__year=m.year, disbursement_date__month=m.month
+            )
+            if user.role != UserRole.SUPER_ADMIN and user.branch:
+                contrib_qs = contrib_qs.filter(member__branch=user.branch)
+                loan_qs = loan_qs.filter(branch=user.branch)
+
+            trend.append({
+                'month': m.strftime('%b %Y'),
+                'contributions': float(contrib_qs.aggregate(t=Sum('paid'))['t'] or 0),
+                'loans_disbursed': float(loan_qs.aggregate(t=Sum('principal'))['t'] or 0),
+            })
+
+        # ---- BAR GRAPH: members & contributions per branch ----
+        branches_qs = Branch.objects.filter(is_active=True)
+        if user.role != UserRole.SUPER_ADMIN and user.branch:
+            branches_qs = branches_qs.filter(id=user.branch_id)
+
+        branch_comparison = []
+        for branch in branches_qs:
+            member_count = Member.objects.filter(branch=branch, status='ACTIVE').count()
+            total_contrib = Contribution.objects.filter(
+                member__branch=branch, status='POSTED'
+            ).aggregate(t=Sum('paid'))['t'] or 0
+            branch_comparison.append({
+                'branch_name': branch.name,
+                'members': member_count,
+                'contributions': float(total_contrib),
+            })
+
+        # ---- PIE CHART: active people per business unit ----
+        distribution = [
+            {'name': 'Tujijenge', 'value': Member.objects.filter(
+                branch__branch_type=BranchType.TUJIJENGE, status='ACTIVE').count()},
+            {'name': 'Table Banking', 'value': Member.objects.filter(
+                branch__branch_type=BranchType.TABLE_BANKING, status='ACTIVE').count()},
+            {'name': 'Wealth Alliance', 'value': Investor.objects.filter(status='ACTIVE').count()},
+            {'name': 'Rentals', 'value': Tenant.objects.filter(status='ACTIVE').count()},
+        ]
+
+        return Response({
+            'trend': trend,
+            'branch_comparison': branch_comparison,
+            'distribution': distribution,
+        })
+        
+        
+
+# ─────────────────────────────────────────────
+# TUJIJENGE REPORT SUMMARY
+# ─────────────────────────────────────────────
+
+class TujijengeReportSummaryView(views.APIView):
+    permission_classes = [IsAuthenticated, IsAuditorOrAbove]
+
+    def get(self, request):
+        user = request.user
+        year = int(request.query_params.get('year', timezone.now().year))
+        month = request.query_params.get('month')
+        branch_id = request.query_params.get('branch')
+
+        branch_qs = Branch.objects.filter(branch_type=BranchType.TUJIJENGE, is_active=True)
+        if user.role != UserRole.SUPER_ADMIN and user.branch:
+            branch_qs = branch_qs.filter(id=user.branch_id)
+        if branch_id:
+            branch_qs = branch_qs.filter(id=branch_id)
+
+        members_qs = Member.objects.filter(branch__in=branch_qs)
+        contrib_qs = Contribution.objects.filter(member__branch__in=branch_qs, period_year=year)
+        loans_qs = Loan.objects.filter(branch__in=branch_qs)
+
+        if month:
+            contrib_qs = contrib_qs.filter(period_month=month)
+
+        # ---- 4 STAT CARDS ----
+        stats = {
+            'total_members': members_qs.filter(status='ACTIVE').count(),
+            'total_contributions': float(contrib_qs.filter(status='POSTED').aggregate(t=Sum('paid'))['t'] or 0),
+            'total_loans_outstanding': float(loans_qs.filter(
+                status__in=['PERFORMING', 'DISBURSED', 'WATCHLIST', 'OVERDUE']
+            ).aggregate(t=Sum('balance'))['t'] or 0),
+            'total_arrears': float(contrib_qs.aggregate(t=Sum('arrears'))['t'] or 0),
+        }
+
+        # ---- LINE GRAPH: contributions vs arrears across the year ----
+        trend = []
+        for m in range(1, 13):
+            m_qs = Contribution.objects.filter(member__branch__in=branch_qs, period_year=year, period_month=m)
+            trend.append({
+                'month': datetime.date(year, m, 1).strftime('%b'),
+                'contributions': float(m_qs.filter(status='POSTED').aggregate(t=Sum('paid'))['t'] or 0),
+                'arrears': float(m_qs.aggregate(t=Sum('arrears'))['t'] or 0),
+            })
+
+        # ---- BAR GRAPH: loan portfolio by status ----
+        loan_breakdown = []
+        for st in LoanStatus.values:
+            qs = loans_qs.filter(status=st)
+            count = qs.count()
+            if count:
+                loan_breakdown.append({
+                    'status': st,
+                    'count': count,
+                    'amount': float(qs.aggregate(t=Sum('balance'))['t'] or 0),
+                })
+
+        # ---- PIE: active members per branch ----
+        branch_distribution = []
+        for b in branch_qs:
+            c = Member.objects.filter(branch=b, status='ACTIVE').count()
+            if c:
+                branch_distribution.append({'name': b.name, 'value': c})
+
+        # ---- DETAIL TABLES ----
+        contributions_table = ContributionSerializer(
+            contrib_qs.select_related('member').order_by('-period_month')[:300], many=True
+        ).data
+        loans_table = LoanListSerializer(
+            loans_qs.select_related('member', 'product').order_by('-created_at')[:300], many=True
+        ).data
+        arrears_table = ContributionSerializer(
+            contrib_qs.filter(arrears__gt=0).select_related('member').order_by('-arrears')[:300], many=True
+        ).data
+
+        return Response({
+            'stats': stats,
+            'trend': trend,
+            'loan_breakdown': loan_breakdown,
+            'branch_distribution': branch_distribution,
+            'contributions_table': contributions_table,
+            'loans_table': loans_table,
+            'arrears_table': arrears_table,
+        })

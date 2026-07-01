@@ -11,6 +11,7 @@ urlpatterns = [
 
     # ── DASHBOARD ─────────────────────────────────────────────────────────
     path('dashboard/', views.DashboardView.as_view(), name='dashboard'),
+    path('dashboard/graphs/', views.DashboardGraphsView.as_view(), name='dashboard-graphs'),
 
     # ── USERS ─────────────────────────────────────────────────────────────
     path('users/', views.UserListCreateView.as_view(), name='user-list'),
