@@ -419,6 +419,8 @@ export const reportsAPI = {
 
   // NEW
   rentalsSummary: (params) => api.get('/rentals/reports/summary/', { params: buildParams(params) }),
+  tbSummary: (params) => api.get('/table-banking/reports/summary/', { params: buildParams(params) }),
+
 }
 
 
