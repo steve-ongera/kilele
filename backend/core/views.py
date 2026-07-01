@@ -1105,11 +1105,32 @@ class TenantDetailView(generics.RetrieveUpdateAPIView):
 
 
 class LeaseListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated, IsFinanceOfficerOrAbove]
+    permission_classes = [IsAuthenticated]  # Allow all authenticated users
     serializer_class = LeaseSerializer
 
+    def get_permissions(self):
+        # POST (create) requires Finance Officer or above
+        if self.request.method == 'POST':
+            return [IsAuthenticated(), IsFinanceOfficerOrAbove()]
+        # GET (list) is allowed for all authenticated users
+        return [IsAuthenticated()]
+
     def get_queryset(self):
+        user = self.request.user
         qs = Lease.objects.select_related('tenant', 'unit').order_by('-start_date')
+        
+        # TENANTS can only see their own leases
+        if user.role == UserRole.TENANT:
+            try:
+                tenant = user.tenant
+                qs = qs.filter(tenant=tenant)
+            except:
+                return qs.none()
+        # Other non-super admins see only their branch leases
+        elif user.role != UserRole.SUPER_ADMIN and user.branch:
+            qs = qs.filter(unit__property__branch=user.branch)
+            
+        # Additional filters
         tenant_id = self.request.query_params.get('tenant')
         unit_id = self.request.query_params.get('unit')
         if tenant_id:
@@ -1123,20 +1144,84 @@ class LeaseListCreateView(generics.ListCreateAPIView):
 
 
 class LeaseDetailView(generics.RetrieveUpdateAPIView):
-    permission_classes = [IsAuthenticated, IsFinanceOfficerOrAbove]
+    permission_classes = [IsAuthenticated]  # Allow all authenticated users
     serializer_class = LeaseSerializer
     queryset = Lease.objects.select_related('tenant', 'unit')
 
+    def get_permissions(self):
+        # PUT/PATCH (update) requires Finance Officer or above
+        if self.request.method in ['PUT', 'PATCH']:
+            return [IsAuthenticated(), IsFinanceOfficerOrAbove()]
+        # GET (retrieve) is allowed for all authenticated users
+        return [IsAuthenticated()]
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = super().get_queryset()
+        
+        # TENANTS can only see their own leases
+        if user.role == UserRole.TENANT:
+            try:
+                tenant = user.tenant
+                qs = qs.filter(tenant=tenant)
+            except:
+                return qs.none()
+        return qs
+
+
+class RentCollectionDetailView(generics.RetrieveUpdateAPIView):
+    permission_classes = [IsAuthenticated]  # Allow all authenticated users
+    serializer_class = RentCollectionSerializer
+    queryset = RentCollection.objects.select_related('tenant', 'unit')
+
+    def get_permissions(self):
+        # PUT/PATCH (update) requires Finance Officer or above
+        if self.request.method in ['PUT', 'PATCH']:
+            return [IsAuthenticated(), IsFinanceOfficerOrAbove()]
+        # GET (retrieve) is allowed for all authenticated users
+        return [IsAuthenticated()]
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = super().get_queryset()
+        
+        # TENANTS can only see their own rent collections
+        if user.role == UserRole.TENANT:
+            try:
+                tenant = user.tenant
+                qs = qs.filter(tenant=tenant)
+            except:
+                return qs.none()
+        return qs
+
 
 class RentCollectionListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated, IsFinanceOfficerOrAbove]
+    permission_classes = [IsAuthenticated]  # Allow all authenticated users
     serializer_class = RentCollectionSerializer
+
+    def get_permissions(self):
+        # POST (create) requires Finance Officer or above
+        if self.request.method == 'POST':
+            return [IsAuthenticated(), IsFinanceOfficerOrAbove()]
+        # GET (list) is allowed for all authenticated users
+        return [IsAuthenticated()]
 
     def get_queryset(self):
         user = self.request.user
         qs = RentCollection.objects.select_related('tenant', 'unit').order_by('-period_year', '-period_month')
-        if user.role != UserRole.SUPER_ADMIN and user.branch:
+        
+        # TENANTS can only see their own rent collections
+        if user.role == UserRole.TENANT:
+            try:
+                tenant = user.tenant
+                qs = qs.filter(tenant=tenant)
+            except:
+                return qs.none()
+        # Other non-super admins see only their branch rent collections
+        elif user.role != UserRole.SUPER_ADMIN and user.branch:
             qs = qs.filter(tenant__branch=user.branch)
+            
+        # Additional filters
         tenant_id = self.request.query_params.get('tenant')
         year = self.request.query_params.get('year')
         month = self.request.query_params.get('month')
