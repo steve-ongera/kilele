@@ -1,3 +1,4 @@
+//src/pages/rentals/RentalsReports.jsx
 import { useState } from 'react'
 import { reportsAPI } from '../../services/api'
 

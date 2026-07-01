@@ -415,8 +415,10 @@ export const reportsAPI = {
     window.URL.revokeObjectURL(url)
   },
 
-  // NEW
   tujijengeSummary: (params) => api.get('/tujijenge/reports/summary/', { params: buildParams(params) }),
+
+  // NEW
+  rentalsSummary: (params) => api.get('/rentals/reports/summary/', { params: buildParams(params) }),
 }
 
 
