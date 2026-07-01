@@ -578,6 +578,8 @@ class DividendDeclarationSerializer(serializers.ModelSerializer):
             obj.investor_dividends.all(), many=True
         ).data
 
+class UserSetPasswordSerializer(serializers.Serializer):
+    password = serializers.CharField(min_length=6, write_only=True)
 
 class InvestorDividendSerializer(serializers.ModelSerializer):
     investor_name = serializers.CharField(source='investor.full_name', read_only=True)

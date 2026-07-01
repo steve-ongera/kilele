@@ -47,7 +47,7 @@ from .serializers import (
     ApprovalRequestSerializer, ApprovalActionSerializer, ApprovalRejectSerializer,
     AuditLogSerializer,
     NotificationSerializer, NotificationTemplateSerializer,
-    DashboardSerializer, InvestorDividendSerializer
+    DashboardSerializer, InvestorDividendSerializer,UserSetPasswordSerializer
 )
 from .permissions import (
     IsSuperAdmin, IsBranchAdminOrAbove, IsFinanceOfficerOrAbove,
@@ -335,7 +335,26 @@ class UserListCreateView(generics.ListCreateAPIView):
                   model_name='User', object_id=str(serializer.instance.id),
                   new_value={'email': serializer.instance.email, 'role': serializer.instance.role})
         
-        
+
+class UserSetPasswordView(views.APIView):
+    permission_classes = [IsAuthenticated, IsSuperAdmin]
+
+    def post(self, request, pk):
+        try:
+            user = User.objects.get(pk=pk)
+        except User.DoesNotExist:
+            return Response({'detail': 'User not found.'}, status=404)
+
+        serializer = UserSetPasswordSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        user.set_password(serializer.validated_data['password'])
+        user.save(update_fields=['password'])
+
+        log_audit(user=request.user, action='SET_USER_PASSWORD',
+                  model_name='User', object_id=str(user.id))
+        return Response({'detail': 'Password updated successfully.'})
+
 class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated, IsSuperAdmin]
     queryset = User.objects.all()
