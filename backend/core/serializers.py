@@ -203,11 +203,13 @@ class MemberCreateSerializer(serializers.ModelSerializer):
         model = Member
         fields = [
             'branch', 'user', 'full_name', 'phone', 'email',
-            'id_number', 'date_joined', 'shares', 'password', 'create_user',
+            'id_number', 'date_joined', 'shares', 'status',   # ← added 'status'
+            'password', 'create_user',
         ]
         extra_kwargs = {
             'user': {'required': False, 'allow_null': True},
             'email': {'required': False, 'allow_blank': True},
+            'status': {'required': False},                    # ← added
         }
 
     def validate(self, data):
