@@ -1,6 +1,10 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { dashboardAPI, branchesAPI, toArray } from '../../services/api'
+import {
+  LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+} from 'recharts'
 
 const fmt = (n) => Number(n || 0).toLocaleString('en-KE', { maximumFractionDigits: 0 })
 const fmtKES = (n) => `KES ${fmt(n)}`
@@ -13,9 +17,12 @@ const BRANCH_TYPE_META = {
   CUSTOM:          { icon: 'bi-grid',            color: 'gray',   label: 'Custom' },
 }
 
+const PIE_COLORS = ['#2563eb', '#f97316', '#16a34a', '#9333ea']
+
 export default function SuperDashboard() {
   const [kpis, setKpis] = useState(null)
   const [branches, setBranches] = useState([])
+  const [graphs, setGraphs] = useState(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => { fetchAll() }, [])
@@ -23,12 +30,14 @@ export default function SuperDashboard() {
   const fetchAll = async () => {
     setLoading(true)
     try {
-      const [dashRes, branchRes] = await Promise.all([
+      const [dashRes, branchRes, graphRes] = await Promise.all([
         dashboardAPI.get(),
         branchesAPI.list(),
+        dashboardAPI.graphs(),
       ])
       setKpis(dashRes.data)
       setBranches(toArray(branchRes.data))
+      setGraphs(graphRes.data)
     } catch {
       // silent
     } finally {
@@ -75,6 +84,99 @@ export default function SuperDashboard() {
           </span>
         </div>
       )}
+
+      {/* ── GRAPHS ────────────────────────────────── */}
+      <div className="graph-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24, marginBottom: 24 }}>
+
+        {/* LINE GRAPH — Contributions vs Loans Disbursed */}
+        <div className="card">
+          <div className="card__header">
+            <h3 className="card__title">Contributions vs Loans Disbursed (6 months)</h3>
+          </div>
+          <div className="card__body" style={{ height: 300 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={graphs?.trend || []}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="month" />
+                <YAxis tickFormatter={(v) => fmt(v)} />
+                <Tooltip formatter={(v) => fmtKES(v)} />
+                <Legend />
+                <Line type="monotone" dataKey="contributions" name="Contributions" stroke="#16a34a" strokeWidth={2} />
+                <Line type="monotone" dataKey="loans_disbursed" name="Loans Disbursed" stroke="#f97316" strokeWidth={2} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        {/* BAR GRAPH — Branch comparison */}
+        <div className="card">
+          <div className="card__header">
+            <h3 className="card__title">Members & Contributions by Branch</h3>
+          </div>
+          <div className="card__body" style={{ height: 300 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={graphs?.branch_comparison || []}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="branch_name" />
+                <YAxis yAxisId="left" tickFormatter={(v) => fmt(v)} />
+                <YAxis yAxisId="right" orientation="right" tickFormatter={(v) => fmt(v)} />
+                <Tooltip />
+                <Legend />
+                <Bar yAxisId="left" dataKey="members" name="Active Members" fill="#2563eb" radius={[4, 4, 0, 0]} />
+                <Bar yAxisId="right" dataKey="contributions" name="Contributions (KES)" fill="#16a34a" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        {/* 3D-STYLE PIE — distribution across business units */}
+        <div className="card" style={{ gridColumn: '1 / -1' }}>
+          <div className="card__header">
+            <h3 className="card__title">Active People by Business Unit</h3>
+          </div>
+          <div className="card__body" style={{ height: 340, perspective: 800 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                {/* shadow/base layer offset down+scaled to fake depth */}
+                <Pie
+                  data={graphs?.distribution || []}
+                  dataKey="value"
+                  nameKey="name"
+                  cx="50%"
+                  cy="54%"
+                  innerRadius={0}
+                  outerRadius={110}
+                  startAngle={90}
+                  endAngle={-270}
+                  isAnimationActive={false}
+                >
+                  {(graphs?.distribution || []).map((entry, i) => (
+                    <Cell key={`shadow-${i}`} fill="#00000022" stroke="none" />
+                  ))}
+                </Pie>
+                {/* main colored layer, slightly higher, creates the "raised" 3D look */}
+                <Pie
+                  data={graphs?.distribution || []}
+                  dataKey="value"
+                  nameKey="name"
+                  cx="50%"
+                  cy="48%"
+                  outerRadius={110}
+                  startAngle={90}
+                  endAngle={-270}
+                  label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                >
+                  {(graphs?.distribution || []).map((entry, i) => (
+                    <Cell key={`slice-${i}`} fill={PIE_COLORS[i % PIE_COLORS.length]} stroke="#fff" strokeWidth={2} />
+                  ))}
+                </Pie>
+                <Tooltip />
+                <Legend />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      </div>
 
       {/* Branch cards */}
       <div className="card">

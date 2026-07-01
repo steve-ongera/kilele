@@ -143,6 +143,7 @@ export const authAPI = {
 
 export const dashboardAPI = {
   get: () => api.get('/dashboard/'),
+  graphs: () => api.get('/dashboard/graphs/'),
 }
 
 
@@ -422,6 +423,8 @@ export const reportsAPI = {
     window.URL.revokeObjectURL(url)
   },
 }
+
+
 
 
 // ─────────────────────────────────────────────
