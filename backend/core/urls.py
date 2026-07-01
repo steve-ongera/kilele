@@ -20,6 +20,7 @@ urlpatterns = [
     path('users/', views.UserListCreateView.as_view(), name='user-list'),
     path('users/<uuid:pk>/', views.UserDetailView.as_view(), name='user-detail'),
     path('profile/', views.ProfileView.as_view(), name='profile'),
+    path('users/<uuid:pk>/set-password/', views.UserSetPasswordView.as_view(), name='user-set-password'),
 
     # ── BRANCHES ──────────────────────────────────────────────────────────
     path('branches/', views.BranchListCreateView.as_view(), name='branch-list'),
