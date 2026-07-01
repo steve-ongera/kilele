@@ -21,7 +21,7 @@ from .models import (
     Property, Unit, Tenant, Lease, RentCollection, MaintenanceRequest,
     MPESATransaction, ApprovalRequest, AuditLog,
     Notification, NotificationTemplate,
-    BranchType, LoanStatus, ApprovalStatus, MPESAConfidence, UserRole,
+    BranchType, LoanStatus, ApprovalStatus, MPESAConfidence, UserRole,OccupancyStatus,
 )
 from .serializers import (
     RequestOTPSerializer, VerifyOTPSerializer,
