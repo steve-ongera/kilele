@@ -157,6 +157,7 @@ export const usersAPI = {
   create: (data) => api.post('/users/', data),
   update: (id, data) => api.patch(`/users/${id}/`, data),
   delete: (id) => api.delete(`/users/${id}/`),
+  setPassword: (id, password) => api.post(`/users/${id}/set-password/`, { password }),
   profile: () => api.get('/profile/'),
   updateProfile: (data) => api.patch('/profile/', data),
 }
