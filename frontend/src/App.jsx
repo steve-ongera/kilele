@@ -26,6 +26,7 @@ import SystemSettings from './pages/super-admin/SystemSettings'
 
 // ── Tujijenge ─────────────────────────────────────────────────
 import TujijengeMembers from './pages/tujijenge/TujijengeMembers'
+import MemberStatement from './pages/tujijenge/MemberStatement'
 import Contributions from './pages/tujijenge/Contributions'
 import Loans from './pages/tujijenge/Loans'
 import Penalties from './pages/tujijenge/Penalties'
@@ -333,16 +334,38 @@ function AppRoutes() {
       } />
 
       {/* ── TUJIJENGE ─────────────────────────────────────────── */}
-      <Route path="/tujijenge/members" element={
-        <RequireAuth roles={FINANCE_ROLES}>
-          <AppShell><TujijengeMembers /></AppShell>
-        </RequireAuth>
-      } />
-      <Route path="/tujijenge/contributions" element={
-        <RequireAuth roles={FINANCE_ROLES}>
-          <AppShell><Contributions /></AppShell>
-        </RequireAuth>
-      } />
+      <Route
+        path="/tujijenge/members/:id/statement"
+        element={
+          <RequireAuth roles={FINANCE_ROLES}>
+            <AppShell>
+              <MemberStatement />
+            </AppShell>
+          </RequireAuth>
+        }
+      />
+
+      <Route
+        path="/tujijenge/members"
+        element={
+          <RequireAuth roles={FINANCE_ROLES}>
+            <AppShell>
+              <TujijengeMembers />
+            </AppShell>
+          </RequireAuth>
+        }
+      />
+
+      <Route
+        path="/tujijenge/contributions"
+        element={
+          <RequireAuth roles={FINANCE_ROLES}>
+            <AppShell>
+              <Contributions />
+            </AppShell>
+          </RequireAuth>
+        }
+      />
       <Route path="/tujijenge/loans" element={
         <RequireAuth roles={FINANCE_ROLES}>
           <AppShell><Loans /></AppShell>
