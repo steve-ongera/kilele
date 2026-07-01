@@ -287,19 +287,15 @@ class DashboardView(views.APIView):
 # ─────────────────────────────────────────────
 
 class UserListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]  # Remove IsSuperAdmin
-    serializer_class = UserCreateSerializer
+    permission_classes = [IsAuthenticated]
+    queryset = User.objects.all()          # ← THE FIX: was missing, causing the 500
 
     def get_permissions(self):
-        # For POST (create), check role-based permissions
         if self.request.method == 'POST':
             user = self.request.user
-            # Super Admins can create any user
             if user.role == UserRole.SUPER_ADMIN:
                 return [IsAuthenticated()]
-            # Branch Admins can only create MEMBERS
             if user.role == UserRole.BRANCH_ADMIN:
-                # Check if the user being created is a MEMBER
                 role = self.request.data.get('role', 'MEMBER')
                 if role != UserRole.MEMBER:
                     from rest_framework.permissions import BasePermission
@@ -308,36 +304,38 @@ class UserListCreateView(generics.ListCreateAPIView):
                             return False
                     return [IsAuthenticated(), DenyCreateNonMember()]
                 return [IsAuthenticated()]
-            # Finance Officers cannot create users
             return [IsAuthenticated(), IsSuperAdmin()]
-        # GET (list) requires Super Admin
         return [IsAuthenticated(), IsSuperAdmin()]
 
     def get_serializer_class(self):
         return UserCreateSerializer if self.request.method == 'POST' else UserSerializer
 
     def get_queryset(self):
-        qs = super().get_queryset()
+        qs = super().get_queryset().select_related('branch').order_by('-date_joined')
         role = self.request.query_params.get('role')
         branch = self.request.query_params.get('branch')
+        search = self.request.query_params.get('search')
         if role:
             qs = qs.filter(role=role)
         if branch:
             qs = qs.filter(branch__id=branch)
+        if search:
+            qs = qs.filter(
+                Q(full_name__icontains=search) | Q(email__icontains=search)
+            )
         return qs
 
     def perform_create(self, serializer):
-        # Ensure Branch Admins can only create MEMBERS
         user = self.request.user
         if user.role == UserRole.BRANCH_ADMIN:
-            # Force role to MEMBER
             serializer.save(role=UserRole.MEMBER, branch=user.branch)
         else:
             serializer.save()
-        log_audit(user=self.request.user, action='CREATE_USER',
+        log_audit(user=user, action='CREATE_USER',
                   model_name='User', object_id=str(serializer.instance.id),
                   new_value={'email': serializer.instance.email, 'role': serializer.instance.role})
-
+        
+        
 class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated, IsSuperAdmin]
     queryset = User.objects.all()
